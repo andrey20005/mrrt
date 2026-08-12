@@ -39,7 +39,7 @@ struct Polygon {
 // просто список полигонов на сцене
 @binding(1) @group(0) var<storage, read> polygons: array<Polygon>;
 
-struct Box {
+struct BvhNode {
     box_max: vec3f,
     // первый ребенок всегда находтся на +1
     // номер второго ребенка или номер начала полигонов
@@ -48,17 +48,28 @@ struct Box {
     // если отрицательное число то в коробке лежат две другие коробки, иначе полигоны в количестве 
     poly_count: i32 
 }
-@binding(2) @group(0) var<storage, read> bvh: array<Box>;
+@binding(2) @group(0) var<storage, read> bvh: array<BvhNode>;
 
 struct VertexOutput {
     @builtin(position) position : vec4f,
     @location(0) uv : vec2f,
 };
 
+// захарткощенный шейдер для выведения фрагментного шейдера на весь экран 
 @vertex
 fn vertex_main(
-    @location(0) position: vec2f, @builtin(vertex_index) vid : u32
+    @builtin(vertex_index) vid : u32
 ) -> VertexOutput {
+    var position = vec2f();
+    if vid <= 2 {
+        if vid == 0 { position = vec2f( 1,  1); }
+        if vid == 1 { position = vec2f( 1, -1); }
+        if vid == 2 { position = vec2f(-1,  1); }
+    } else {
+        if vid == 3 { position = vec2f( 1, -1); }
+        if vid == 4 { position = vec2f(-1,  1); }
+        if vid == 5 { position = vec2f(-1, -1); }
+    }
     return VertexOutput(vec4f(position, 0., 1.), position * uf.aspect);
 }
 
@@ -342,8 +353,7 @@ fn trace_ray(ro_in: vec3f, rd_in: vec3f) -> vec3f {
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
     // сид для рандома
-    // rng_state = new_seed_f32(vec4f(input.uv, uf.time, 0.0));
-    rng_state = new_seed_f32(vec4f(uf.time, input.uv.xy, 0));
+    rng_state = new_seed_f32(vec4f(uf.time, input.uv.x, input.uv.y, 0));
     
     let uv = input.uv;
     

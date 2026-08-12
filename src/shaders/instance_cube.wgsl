@@ -65,7 +65,7 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4f {
     let diffuse_intensity = max(dot(normal, sun_direction), 0.0);
 
     // Базовый цвет куба и фоновый свет
-    let cube_color = vec3f(1.0, 0.6, 0.1);
+    let cube_color = vec3f(1.0, 0.3, 0.7);
     let ambient_light = vec3f(0.1, 0.1, 0.1);
 
     let final_color = cube_color * diffuse_intensity + ambient_light;

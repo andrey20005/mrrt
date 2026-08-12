@@ -156,7 +156,6 @@ impl AppLogic for CubeApp {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                // УБРАНО: Строку constants: &[] полностью удалили, так как этого поля больше нет
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,

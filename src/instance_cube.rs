@@ -30,7 +30,7 @@ impl TriangleInstance {
 }
 
 pub struct CubeApp {
-    tris_buffer: wgpu::Buffer,
+    instance_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
     bind_group0: instance_cube::bind_groups::BindGroup0,
     render_pipeline: wgpu::RenderPipeline,
@@ -68,8 +68,10 @@ impl AppLogic for CubeApp {
             // 6. НИЖНЯЯ ГРАНЬ (Y = -0.5)
             TriangleInstance::new(glam::Vec3::new(-0.5, -0.5, -0.5), glam::Vec3::new( 0.5, -0.5,  0.5), glam::Vec3::new(-0.5, -0.5,  0.5)),
             TriangleInstance::new(glam::Vec3::new(-0.5, -0.5, -0.5), glam::Vec3::new( 0.5, -0.5, -0.5), glam::Vec3::new( 0.5, -0.5,  0.5)),
-        ];
 
+            TriangleInstance::new(glam::Vec3::new(-0.45, -0.55, -0.45), glam::Vec3::new( 0.45, -0.55, -0.45), glam::Vec3::new( 0.45, -0.55,  0.45)),
+        ];
+        
         // Создаем буфер треугольников
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Cube Vertex Buffer"),
@@ -157,8 +159,7 @@ impl AppLogic for CubeApp {
 
         // Возвращаем полностью готовый экземпляр нашего приложения
         CubeApp {
-            vertex_buffer,
-            index_buffer,
+            instance_buffer,
             uniform_buffer,
             bind_group0,
             render_pipeline,
@@ -177,14 +178,14 @@ impl AppLogic for CubeApp {
     ) {
         // ---- ЧАСТЬ 1: МАТЕМАТИКА И ОБНОВЛЕНИЕ UNIFORM НА CPU ----
 
-        // 1. Считаем время в секундах с момента старта приложения
+        // Считаем время в секундах с момента старта приложения
         let elapsed_time = self.start_time.elapsed().as_secs_f32();
 
-        // 2. Считаем углы вращения куба (пусть по оси X крутится чуть медленнее, чем по Y)
+        // Считаем углы вращения куба (пусть по оси X крутится чуть медленнее, чем по Y)
         let angle_x = elapsed_time * 0.5;
         let angle_y = elapsed_time * 0.8;
 
-        // 3. Создаем матрицы вращения с помощью библиотеки glam
+        // Создаем матрицы вращения с помощью библиотеки glam
         let rotation_x = glam::Mat3::from_rotation_x(angle_x);
         let rotation_y = glam::Mat3::from_rotation_y(angle_y);
         
@@ -194,18 +195,18 @@ impl AppLogic for CubeApp {
         // Позиция камеры: отодвинем её назад по оси Z на 5 единиц, чтобы видеть куб целиком
         let camera_position = glam::Vec3::new(0.0, 0.0, 8.0);
 
-        // 4. Заполняем нашу сгенерированную структуру CubeUniform данными
-        let uniform_data = cube::CubeUniform {
+        // Заполняем нашу сгенерированную структуру CubeUniform данными
+        let uniform_data = instance_cube::CubeUniform {
             camera_mat: final_rotation_mat,
             camera_pos: camera_position,
             time: elapsed_time,
         };
 
-        // 5. Сериализуем структуру в байты по стандарту WGSL с помощью библиотеки encase
+        // Сериализуем структуру в байты по стандарту WGSL с помощью библиотеки encase
         let mut byte_buffer = encase::UniformBuffer::new(Vec::new());
         byte_buffer.write(&uniform_data).unwrap();
 
-        // 6. Отправляем получившиеся байты в Uniform-буфер на видеокарту через очередь (queue)
+        // Отправляем получившиеся байты в Uniform-буфер на видеокарту через очередь (queue)
         queue.write_buffer(&self.uniform_buffer, 0, &byte_buffer.into_inner());
 
 
@@ -230,24 +231,15 @@ impl AppLogic for CubeApp {
             multiview_mask: None,
         });
 
-        // 1. Устанавливаем скомпилированный графический конвейер куба
+        // Устанавливаем скомпилированный графический конвейер куба
         render_pass.set_pipeline(&self.render_pipeline);
 
-        // 2. Привязываем буфер вершин к слоту 0 (как указано в разметке vertex_buffer_layout)
-        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        // Привязываем буфер вершин к слоту 0 (как указано в разметке vertex_buffer_layout)
+        render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
 
-        // 3. Привязываем буфер индексов. Мы использовали тип u16, поэтому указываем IndexFormat::Uint16
-        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        // Подключаем нашу группу привязок (Uniform-буфер) через сгенерированную функцию
+        instance_cube::set_bind_groups(&mut render_pass, &self.bind_group0);
 
-        // 4. Подключаем нашу группу привязок (Uniform-буфер) через сгенерированную функцию
-        cube::set_bind_groups(&mut render_pass, &self.bind_group0);
-
-        // 5. Финальная команда: рисуем куб по индексам!
-        // 36 — это общее количество индексов в массиве CUBE_INDICES (6 граней по 2 треугольника по 3 вершины)
-        // 0..1 — означает, что мы рисуем ровно один экземпляр куба (без инстансинга)
-        render_pass.draw_indexed(0..36, 0, 0..1);
-
-        // Автоматически закрываем рендер-пасс при выходе из области видимости метода,
-        // возвращая управление системному энкодеру.
+        render_pass.draw(0..3, 0..13);
     }
 }

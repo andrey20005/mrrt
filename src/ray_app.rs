@@ -1,0 +1,239 @@
+use std::sync::Arc;
+use winit::dpi::PhysicalSize;
+use winit::event::WindowEvent;
+use winit::window::Window;
+use wgpu::util::DeviceExt;
+
+use crate::system::AppLogic;
+use crate::polygon::{Polygon, PolygonSliceExt};
+use crate::bvh::BvhNode;
+use crate::obj_parser;
+use crate::shaders::ray; // Наш сгенерированный модуль
+
+pub struct RayApp {
+    render_pipeline: wgpu::RenderPipeline,
+    
+    uniform_buffer: wgpu::Buffer,
+    polygons_buffer: wgpu::Buffer,
+    bvh_buffer: wgpu::Buffer,
+    
+    bind_group0: ray::bind_groups::BindGroup0,
+    start_time: std::time::Instant,
+
+    aspect: glam::Vec2,
+    pixel_size: f32,
+    polygons_count: u32,
+}
+
+impl AppLogic for RayApp {
+    fn new(
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        surface_format: wgpu::TextureFormat,
+        window: Arc<Window>,
+    ) -> Self {
+        // --- ЧАСТЬ 1: ЗАГРУЗКА ВСЕХ 5 МОДЕЛЕЙ КОРНЕЛЛ-БОКСА ---
+        let mut scene_polygons = Vec::new();
+
+        // Описываем параметры для каждого из 5 файлов
+        // (Имя файла, Цвет RGB, Тип материала t)
+        let models_config = [
+            ("Cornell_box1.obj", glam::Vec3::new(0.8, 0.8, 0.8), 1.0), // Белый матовый
+            ("Cornell_box2.obj", glam::Vec3::new(0.8, 0.1, 0.1), 1.0), // Красный матовый
+            ("Cornell_box3.obj", glam::Vec3::new(0.1, 0.8, 0.1), 1.0), // Зеленый матовый
+            ("Cornell_box4.obj", glam::Vec3::new(1.0, 1.0, 1.0) * 20., 2.0), // Светящийся (свечение)
+            ("Cornell_box5.obj", glam::Vec3::new(0.9, 0.9, 0.9), 0.2), // Полуматовый металлический
+        ];
+
+        for (file_name, color, mat_type) in models_config {
+            let path = format!("assets/models/{}", file_name);
+            if let Ok(file_data) = std::fs::read_to_string(&path) {
+                if let Ok(r) = obj_parser::parse_obj_into_vector(&file_data, color, mat_type, &mut scene_polygons) {
+                    if file_name == "Cornell_box5.obj" {
+                        let box_slice = &mut scene_polygons[r];
+                        box_slice.transform(glam::Mat4::from_rotation_y(90_f32.to_radians()));
+                    }
+                } else { log::error!("Ошибка: Не удалось распарсить геометрию внутри файла {}", file_name); }
+            } else { log::warn!("Предупреждение: Не удалось прочитать файл {}", path); }
+        }
+
+        // Страховочный треугольник, если папка assets пуста
+        if scene_polygons.is_empty() {
+            scene_polygons.push(Polygon::new(
+                glam::Vec3::new(-1.0, -1.0, -1.0),
+                glam::Vec3::new( 1.0, -1.0, -1.0),
+                glam::Vec3::new( 0.0,  1.0, -1.0),
+                glam::Vec3::new(1.0, 0.5, 0.0),
+                1.0,
+            ));
+        }
+        let polygons_count = scene_polygons.len() as u32;
+
+        // Строим BVH дерево
+        let total_range = 0..polygons_count;
+        let bvh_start_time = std::time::Instant::now();
+        
+        // Строим дерево
+        let bvh_tree = BvhNode::new_bvh(&mut scene_polygons, total_range, 16, 3);
+
+        let bvh_duration = bvh_start_time.elapsed();
+        let bvh_stats = bvh_tree.collect_stats();
+        println!("==================================================");
+        println!(" СТАТИСТИКА ГЕОМЕТРИЧЕСКОГО ЯДРА ДВИЖКА ");
+        println!("==================================================");
+        println!("Успешно загружено полигонов: {}", polygons_count);
+        println!("Время построения BVH-дерева: {:?}", bvh_duration);
+        println!("--------------------------------------------------");
+        println!("Всего листьев в дереве:      {}", bvh_stats.total_leaves);
+        println!("Глубина дерева (слои):      Мин: {}, Макс: {}, Средняя: {:.2}", bvh_stats.min_depth, bvh_stats.max_depth, bvh_stats.avg_depth);
+        println!("Полигонов в одном листе:    Мин: {}, Макс: {}, Среднее: {:.2}", bvh_stats.min_poly_in_leaf, bvh_stats.max_poly_in_leaf, bvh_stats.avg_poly_in_leaf);
+        println!("==================================================");
+
+        // --- ЧАСТЬ 2: УПАКОВКА В СТРУКТУРЫ ENCASE ДЛЯ GPU ---
+        
+        let gpu_polygons: Vec<ray::Polygon> = scene_polygons.iter().map(|p| p.to_gpu()).collect();
+        let gpu_bvh_nodes: Vec<ray::BvhNode> = bvh_tree.to_gpu();
+
+        // Вместо bytemuck используем encase::StorageBuffer для полигонов
+        let mut polygons_encase = encase::StorageBuffer::new(Vec::new());
+        polygons_encase.write(&gpu_polygons).unwrap();
+        let polygons_bytes = polygons_encase.into_inner();
+
+        let polygons_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Polygons Storage Buffer"),
+            contents: &polygons_bytes, // Передаем корректные encase-байты
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        // Используем encase::StorageBuffer для BVH нод
+        let mut bvh_encase = encase::StorageBuffer::new(Vec::new());
+        bvh_encase.write(&gpu_bvh_nodes).unwrap();
+        let bvh_bytes = bvh_encase.into_inner();
+
+        let bvh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("BVH Storage Buffer"),
+            contents: &bvh_bytes, // Передаем корректные encase-байты
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        // Создаем Uniform-буфер
+        let uniform_size = <ray::Uniform as encase::ShaderType>::min_size();
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Raytracing Uniform Buffer"),
+            size: uniform_size.get(),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // --- ЧАСТЬ 3: СБОРКА ПАЙПЛАЙНА ---
+        let pipeline_layout = ray::create_pipeline_layout(device);
+
+        let bindings = ray::bind_groups::BindGroupLayout0 {
+            uf: uniform_buffer.as_entire_buffer_binding(),
+            polygons: polygons_buffer.as_entire_buffer_binding(),
+            bvh: bvh_buffer.as_entire_buffer_binding(),
+        };
+        let bind_group0 = ray::bind_groups::BindGroup0::from_bindings(device, bindings);
+
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Raytracing Render Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &ray::create_shader_module(device),
+                entry_point: Some(ray::ENTRY_VERTEX_MAIN),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &ray::create_shader_module(device),
+                entry_point: Some(ray::ENTRY_FRAGMENT_MAIN),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let size = window.inner_size();
+        let w = size.width as f32;
+        let h = size.height as f32;
+        let aspect = glam::Vec2::new(1.0f32.max(w / h), 1.0f32.max(h / w));
+        let pixel_size = 2.0 / w.min(h);
+
+        Self {
+            render_pipeline,
+            uniform_buffer,
+            polygons_buffer,
+            bvh_buffer,
+            bind_group0,
+            start_time: std::time::Instant::now(),
+            aspect,
+            pixel_size,
+            polygons_count,
+        }
+    }
+
+    fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        let w = new_size.width as f32;
+        let h = new_size.height as f32;
+        self.aspect = glam::Vec2::new(1.0f32.max(w / h), 1.0f32.max(h / w));
+        self.pixel_size = 2.0 / w.min(h);
+    }
+
+    fn handle_input(&mut self, _event: &WindowEvent) -> bool {
+        false
+    }
+
+    fn render(
+        &mut self,
+        _device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        let elapsed = self.start_time.elapsed().as_secs_f32();
+
+        let uniform_data = ray::Uniform {
+            time: elapsed,
+            aspect: self.aspect,
+            camera_mat: glam::Mat3::from_rotation_y(-90_f32.to_radians()) * glam::Mat3::from_rotation_x(6_f32.to_radians()),
+            camera_pos: glam::Vec3::new(5.21, 1.46, 0.0),
+            camera_zoom: 4.,
+            pixel_size: self.pixel_size,
+            background_color: glam::Vec3::splat(0.),
+            polygons_count: self.polygons_count,
+            bounces: 6,
+            samples: 2,
+            graphics_mode: 1,
+        };
+
+        let mut byte_buffer = encase::UniformBuffer::new(Vec::new());
+        byte_buffer.write(&uniform_data).unwrap();
+        queue.write_buffer(&self.uniform_buffer, 0, &byte_buffer.into_inner());
+
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Raytracing Render Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None, // ИСПРАВЛЕНО: Добавлено обязательное поле для wgpu 30.0
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+
+        render_pass.set_pipeline(&self.render_pipeline);
+        ray::set_bind_groups(&mut render_pass, &self.bind_group0);
+        render_pass.draw(0..6, 0..1);
+    }
+}

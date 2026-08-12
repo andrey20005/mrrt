@@ -115,7 +115,7 @@ pub fn create_pipeline_layout(device: &wgpu::Device) -> wgpu::PipelineLayout {
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, encase :: ShaderType)]
-pub struct Box {
+pub struct BvhNode {
     pub box_max: glam::Vec3,
     pub sec_child_or_first_poly: i32,
     pub box_min: glam::Vec3,
@@ -225,18 +225,10 @@ impl SetBindGroup for wgpu::RenderBundleEncoder<'_> {
         self.set_bind_group(index, bind_group, offsets);
     }
 }
-pub fn vertex_main_entry(position_step_mode: wgpu::VertexStepMode) -> VertexEntry<1> {
+pub fn vertex_main_entry() -> VertexEntry<0> {
     VertexEntry {
         entry_point: ENTRY_VERTEX_MAIN,
-        buffers: [Some(wgpu::VertexBufferLayout {
-            array_stride: 8,
-            step_mode: position_step_mode,
-            attributes: &[wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x2,
-                offset: 0,
-                shader_location: 0u32,
-            }],
-        })],
+        buffers: [],
         constants: Default::default(),
     }
 }
