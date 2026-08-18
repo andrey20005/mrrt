@@ -90,30 +90,42 @@ pub const ENTRY_FRAGMENT_MAIN: &str = "fragment_main";
 pub const ENTRY_VERTEX_MAIN: &str = "vertex_main";
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub struct VertexInput {
-    pub position: glam::Vec3,
+pub struct TriangleInput {
+    pub v1: glam::Vec3,
+    pub v2: glam::Vec3,
+    pub v3: glam::Vec3,
     pub normal: glam::Vec3,
 }
-impl VertexInput {
-    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+impl TriangleInput {
+    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
         wgpu::VertexAttribute {
             format: wgpu::VertexFormat::Float32x3,
-            offset: std::mem::offset_of!(VertexInput, position) as u64,
+            offset: std::mem::offset_of!(TriangleInput, v1) as u64,
             shader_location: 0,
         },
         wgpu::VertexAttribute {
             format: wgpu::VertexFormat::Float32x3,
-            offset: std::mem::offset_of!(VertexInput, normal) as u64,
+            offset: std::mem::offset_of!(TriangleInput, v2) as u64,
             shader_location: 1,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: std::mem::offset_of!(TriangleInput, v3) as u64,
+            shader_location: 2,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: std::mem::offset_of!(TriangleInput, normal) as u64,
+            shader_location: 3,
         },
     ];
     pub const fn vertex_buffer_layout(
         step_mode: wgpu::VertexStepMode,
     ) -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<VertexInput>() as u64,
+            array_stride: std::mem::size_of::<TriangleInput>() as u64,
             step_mode,
-            attributes: &VertexInput::VERTEX_ATTRIBUTES,
+            attributes: &TriangleInput::VERTEX_ATTRIBUTES,
         }
     }
 }
@@ -195,10 +207,12 @@ impl SetBindGroup for wgpu::RenderBundleEncoder<'_> {
         self.set_bind_group(index, bind_group, offsets);
     }
 }
-pub fn vertex_main_entry(input_step_mode: wgpu::VertexStepMode) -> VertexEntry<1> {
+pub fn vertex_main_entry(instance_step_mode: wgpu::VertexStepMode) -> VertexEntry<1> {
     VertexEntry {
         entry_point: ENTRY_VERTEX_MAIN,
-        buffers: [Some(VertexInput::vertex_buffer_layout(input_step_mode))],
+        buffers: [Some(TriangleInput::vertex_buffer_layout(
+            instance_step_mode,
+        ))],
         constants: Default::default(),
     }
 }

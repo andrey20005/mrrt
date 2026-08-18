@@ -1,28 +1,36 @@
 use std::sync::Arc;
+use glam::Vec3;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::window::Window;
 use wgpu::util::DeviceExt;
 
+use crate::camera::Camera;
+use crate::fps_counter::FrameTimeCounter;
 use crate::system::AppLogic;
 use crate::polygon::{Polygon, PolygonSliceExt};
 use crate::bvh::BvhNode;
 use crate::obj_parser;
-use crate::shaders::ray; // Наш сгенерированный модуль
+use crate::shaders::ray;
 
 pub struct RayApp {
     render_pipeline: wgpu::RenderPipeline,
     
-    uniform_buffer: wgpu::Buffer,
+    uniform_buffer:  wgpu::Buffer,
     polygons_buffer: wgpu::Buffer,
-    bvh_buffer: wgpu::Buffer,
+    bvh_buffer:      wgpu::Buffer,
+    camera:          Camera,
     
     bind_group0: ray::bind_groups::BindGroup0,
-    start_time: std::time::Instant,
+    start_time:  std::time::Instant,
 
-    aspect: glam::Vec2,
-    pixel_size: f32,
+    aspect:         glam::Vec2,
+    pixel_size:     f32,
     polygons_count: u32,
+
+    fps_counter:        crate::fps_counter::FrameTimeCounter,
+    last_frame_instant: std::time::Instant,
+    time_accumulator:   f32,
 }
 
 impl AppLogic for RayApp {
@@ -32,28 +40,44 @@ impl AppLogic for RayApp {
         surface_format: wgpu::TextureFormat,
         window: Arc<Window>,
     ) -> Self {
-        // --- ЧАСТЬ 1: ЗАГРУЗКА ВСЕХ 5 МОДЕЛЕЙ КОРНЕЛЛ-БОКСА ---
+        // --- ЗАГРУЗКА ВСЕХ МОДЕЛЕЙ ---
         let mut scene_polygons = Vec::new();
 
-        // Описываем параметры для каждого из 5 файлов
-        // (Имя файла, Цвет RGB, Тип материала t)
+        // Конфигурация всей сцены в одном массиве
+        // Кортеж содержит: (Имя файла, Цвет, Тип материала, Вектор смещения, Матрица поворота)
         let models_config = [
-            ("Cornell_box1.obj", glam::Vec3::new(0.8, 0.8, 0.8), 1.0), // Белый матовый
-            ("Cornell_box2.obj", glam::Vec3::new(0.8, 0.1, 0.1), 1.0), // Красный матовый
-            ("Cornell_box3.obj", glam::Vec3::new(0.1, 0.8, 0.1), 1.0), // Зеленый матовый
-            ("Cornell_box4.obj", glam::Vec3::new(1.0, 1.0, 1.0) * 20., 2.0), // Светящийся (свечение)
-            ("Cornell_box5.obj", glam::Vec3::new(0.9, 0.9, 0.9), 0.2), // Полуматовый металлический
+            // Системная коробка Корнелла (белая, красная, зеленая стены и лампа)
+            ("cornell_box_walls_and_floor.obj",  glam::Vec3::new(0.8, 0.8, 0.8),      1.0, glam::Vec3::ZERO, glam::Mat4::IDENTITY),
+            ("cornell_box_red_wall.obj",         glam::Vec3::new(0.99, 0.05, 0.05),   1.0, glam::Vec3::ZERO, glam::Mat4::IDENTITY),
+            ("cornell_box_green_wall.obj",       glam::Vec3::new(0.05, 0.99, 0.05),   1.0, glam::Vec3::ZERO, glam::Mat4::IDENTITY),
+            ("cornell_box_blue_wall.obj",         glam::Vec3::new(0.05, 0.05, 0.99),   1.0, glam::Vec3::ZERO, glam::Mat4::IDENTITY),
+            ("cornell_box_lamp.obj",             glam::Vec3::new(1.0, 1.0, 1.0) * 5., 2.0, glam::Vec3::ZERO, glam::Mat4::IDENTITY),
+
+            // Пример: Сюзанна (зеркальная, сдвинута влево)
+            // ("suzanne.obj", glam::Vec3::new(0.9, 0.9, 0.9), 0.55, glam::Vec3::new(0.35, 0., 0.51), glam::Mat4::IDENTITY),
+            ("suzanne_low.obj", glam::Vec3::new(0.9, 0.9, 0.9), 0.55, glam::Vec3::new(0.35, 0., 0.51), glam::Mat4::IDENTITY),
+            
+            // Пример: Дракон (полуматовый, развернут и сдвинут вправо)
+            // ("dragon.obj",  glam::Vec3::new(0.8, 0.7, 0.4), 0.35, glam::Vec3::new(-0.11, 0., -0.42), glam::Mat4::from_rotation_y(-40.0_f32.to_radians())),
+            ("dragon_low.obj",  glam::Vec3::new(0.8, 0.7, 0.4), 0.35, glam::Vec3::new(-0.11, 0., -0.42), glam::Mat4::from_rotation_y(-40.0_f32.to_radians())),
+            
+            // Пример: Сфера (матовая, приподнята)
+            // ("sphere.obj",  glam::Vec3::new(0.99, 0.87, 0.91), 1.0, glam::Vec3::new(-0.43, 0., -0.04), glam::Mat4::IDENTITY),
+            ("sphere_low.obj",  glam::Vec3::new(0.9, 0.7, 0.8), 1.0, glam::Vec3::new(-0.43, 0., -0.04), glam::Mat4::IDENTITY),
         ];
 
-        for (file_name, color, mat_type) in models_config {
+        for (file_name, color, mat_type, translation, rotation) in models_config {
             let path = format!("assets/models/{}", file_name);
             if let Ok(file_data) = std::fs::read_to_string(&path) {
+                // Парсер сразу возвращает чистый Range<usize>
                 if let Ok(r) = obj_parser::parse_obj_into_vector(&file_data, color, mat_type, &mut scene_polygons) {
-                    if file_name == "Cornell_box5.obj" {
-                        let box_slice = &mut scene_polygons[r];
-                        box_slice.transform(glam::Mat4::from_rotation_y(90_f32.to_radians()));
+                    if !r.is_empty() {
+                        let model_slice = &mut scene_polygons[r];
+                        model_slice.transform(rotation);
+                        model_slice.translate(translation);
+                        model_slice.transform(glam::Mat4::from_diagonal(glam::Vec4::new(1., 1., -1., 1.)));
                     }
-                } else { log::error!("Ошибка: Не удалось распарсить геометрию внутри файла {}", file_name); }
+                } else { log::error!("Ошибка: Не удалось распарсить файл {}", file_name); }
             } else { log::warn!("Предупреждение: Не удалось прочитать файл {}", path); }
         }
 
@@ -167,16 +191,22 @@ impl AppLogic for RayApp {
         let aspect = glam::Vec2::new(1.0f32.max(w / h), 1.0f32.max(h / w));
         let pixel_size = 2.0 / w.min(h);
 
+        let camera = Camera::new(Vec3::new(-2.0, 0.9, 0.0), -6.0, 90.0, 1.5, false);
+
         Self {
             render_pipeline,
             uniform_buffer,
             polygons_buffer,
             bvh_buffer,
+            camera,
             bind_group0,
             start_time: std::time::Instant::now(),
             aspect,
             pixel_size,
             polygons_count,
+            fps_counter: FrameTimeCounter::new(5.0),
+            last_frame_instant: std::time::Instant::now(),
+            time_accumulator: 0.0,
         }
     }
 
@@ -187,8 +217,12 @@ impl AppLogic for RayApp {
         self.pixel_size = 2.0 / w.min(h);
     }
 
-    fn handle_input(&mut self, _event: &WindowEvent) -> bool {
-        false
+    fn handle_input(&mut self, event: &WindowEvent) -> bool {
+        self.camera.handle_input(event)
+    }
+
+    fn handle_mouse_motion(&mut self, dx: f64, dy: f64) {
+        self.camera.handle_mouse_motion(dx, dy);
     }
 
     fn render(
@@ -198,19 +232,37 @@ impl AppLogic for RayApp {
         view: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
     ) {
+        let now = std::time::Instant::now();
+        let delta_time = now.duration_since(self.last_frame_instant).as_secs_f32();
+        self.last_frame_instant = now;
+
+        self.camera.update_position(delta_time);
+
+        // Обновляем таймер вывода FPS
+        self.time_accumulator += delta_time;
+        if self.time_accumulator >= 1.0 {
+            let avg_fps = self.fps_counter.get_avg_fps(2.0);
+            let low_1_fps = self.fps_counter.get_percentile_fps(0.01, 2.0);
+            println!("FPS: {:.1} | 1% Low: {:.1}", avg_fps, low_1_fps);
+            self.time_accumulator -= 1.0;
+        }
+
         let elapsed = self.start_time.elapsed().as_secs_f32();
 
         let uniform_data = ray::Uniform {
             time: elapsed,
             aspect: self.aspect,
-            camera_mat: glam::Mat3::from_rotation_y(-90_f32.to_radians()) * glam::Mat3::from_rotation_x(6_f32.to_radians()),
-            camera_pos: glam::Vec3::new(5.21, 1.46, 0.0),
-            camera_zoom: 4.,
+            camera_mat: self.camera.rotation_matrix(),
+            camera_pos: self.camera.position(),
+            camera_zoom: self.camera.zoom(),
+            // camera_mat: glam::Mat3::from_rotation_y(90_f32.to_radians()) * glam::Mat3::from_rotation_x(6_f32.to_radians()),
+            // camera_pos: glam::Vec3::new(-5.0, 1.46, 0.0),
+            // camera_zoom: 4.,
             pixel_size: self.pixel_size,
-            background_color: glam::Vec3::splat(0.),
+            background_color: glam::Vec3::splat(0.1),
             polygons_count: self.polygons_count,
-            bounces: 6,
-            samples: 2,
+            bounces: 4,
+            samples: 15,
             graphics_mode: 1,
         };
 
@@ -235,5 +287,14 @@ impl AppLogic for RayApp {
         render_pass.set_pipeline(&self.render_pipeline);
         ray::set_bind_groups(&mut render_pass, &self.bind_group0);
         render_pass.draw(0..6, 0..1);
+
+        // let now = std::time::Instant::now();
+
+        // // println!("{:.1}", now.duration_since(self.last_frame_instant).as_secs_f32());
+        // if now.duration_since(self.last_frame_instant).as_secs_f32() >= 3. {
+        //     println!("FPS: {:.1} | 1% Low: {:.1}", self.fps_counter.get_avg_fps(1.), self.fps_counter.get_percentile_fps(0.01, 1.));
+        //     self.last_frame_instant = now;
+        // }
+        self.fps_counter.tick();
     }
 }

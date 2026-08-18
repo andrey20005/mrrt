@@ -19,6 +19,7 @@ pub trait AppLogic: Sized {
     /// Обработка ввода и системных событий окна (движение мыши, клавиатура и т.д.)
     /// Возвращает bool: true, если событие перехвачено вашей логикой и winit не должен обрабатывать его дальше
     fn handle_input(&mut self, event: &WindowEvent) -> bool;
+    fn handle_mouse_motion(&mut self, dx: f64, dy: f64) {}
 
     /// Отрисовка кадра на GPU
     fn render(
@@ -237,6 +238,21 @@ impl<T: AppLogic> ApplicationHandler for App<T> {
                 state.resize(size);
             }
             _ => (),
+        }
+    }
+
+     fn device_event(
+        &mut self,
+        _event_loop: &winit::event_loop::ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        if let winit::event::DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
+            if let Some(ref mut state) = self.state {
+                // Перенаправляем дельту движения мыши в нашу камеру, если она там есть!
+                // (Для этого мы добавим метод handle_mouse_motion в ваш трейт AppLogic)
+                state.app_logic.handle_mouse_motion(dx, dy);
+            }
         }
     }
 }

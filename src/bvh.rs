@@ -74,17 +74,19 @@ impl BvhNode {
         if size.y > size.x { axis = 1; }
         if size.z > size[axis] { axis = 2; }
 
-        // Сортируем часть общего массива полигонов по центрам вдоль выбранной оси
+        // Вычисляем индекс середины (локальный для среза и глобальный для диапазонов)
+        let local_mid_idx = (count / 2) as usize;
+        let mid = polygon_range.start + count / 2;
+
+        // Вместо полной сортировки sort_by делим массив пополам за линейное время O(N)
         let sub_slice = &mut polygons[polygon_range.start as usize..polygon_range.end as usize];
-        sub_slice.sort_by(|a, b| {
+        sub_slice.select_nth_unstable_by(local_mid_idx, |a, b| {
             let center_a = (a.v1[axis] + a.v2[axis] + a.v3[axis]) / 3.0;
             let center_b = (b.v1[axis] + b.v2[axis] + b.v3[axis]) / 3.0;
             center_a.partial_cmp(&center_b).unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // Делим диапазон строго пополам (по медиане количества полигонов)
-        let mid = polygon_range.start + count / 2;
-
+        // Диапазоны для рекурсии остаются теми же, но массив перегруппирован в разы быстрее
         let left_range = polygon_range.start..mid;
         let right_range = mid..polygon_range.end;
 

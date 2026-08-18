@@ -7,65 +7,30 @@ use wgpu::util::DeviceExt; // Крейт утилиты для удобного 
 use crate::system::AppLogic;
 use crate::shaders::cube; // Наш сгенерированный генератором модуль
 
-// 1. Описываем структуру вершины на процессоре
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: glam::Vec3,
-    normal: glam::Vec3,
+pub struct TriangleInstance {
+    pub v1: glam::Vec3,
+    pub v2: glam::Vec3,
+    pub v3: glam::Vec3,
+    pub normal: glam::Vec3,
 }
 
+impl TriangleInstance {
+    pub fn new(v1: glam::Vec3, v2: glam::Vec3, v3: glam::Vec3) -> Self {
+        // Считаем два ребра треугольника
+        let edge1 = v2 - v1;
+        let edge2 = v3 - v1;
+        // Векторное произведение дает перпендикуляр (нормаль)
+        // .normalize_or_zero() гарантирует, что длина вектора станет равной 1.0
+        let normal = edge1.cross(edge2).normalize_or_zero();
 
-const CUBE_VERTICES: &[Vertex] = &[
-    // 1. ПЕРЕДНЯЯ ГРАНЬ (Z = -0.5, нормаль Z = -1)
-    Vertex { position: glam::Vec3::new(-0.5, -0.5, -0.5), normal: glam::Vec3::new(0.0, 0.0, -1.0) },
-    Vertex { position: glam::Vec3::new( 0.5, -0.5, -0.5), normal: glam::Vec3::new(0.0, 0.0, -1.0) },
-    Vertex { position: glam::Vec3::new( 0.5,  0.5, -0.5), normal: glam::Vec3::new(0.0, 0.0, -1.0) },
-    Vertex { position: glam::Vec3::new(-0.5,  0.5, -0.5), normal: glam::Vec3::new(0.0, 0.0, -1.0) },
-
-    // 2. ЗАДНЯЯ ГРАНЬ (Z = 0.5, нормаль Z = 1) — обход изнутри наружу
-    Vertex { position: glam::Vec3::new( 0.5, -0.5,  0.5), normal: glam::Vec3::new(0.0, 0.0,  1.0) },
-    Vertex { position: glam::Vec3::new(-0.5, -0.5,  0.5), normal: glam::Vec3::new(0.0, 0.0,  1.0) },
-    Vertex { position: glam::Vec3::new(-0.5,  0.5,  0.5), normal: glam::Vec3::new(0.0, 0.0,  1.0) },
-    Vertex { position: glam::Vec3::new( 0.5,  0.5,  0.5), normal: glam::Vec3::new(0.0, 0.0,  1.0) },
-
-    // 3. ЛЕВАЯ ГРАНЬ (X = -0.5, нормаль X = -1)
-    Vertex { position: glam::Vec3::new(-0.5, -0.5,  0.5), normal: glam::Vec3::new(-1.0, 0.0, 0.0) },
-    Vertex { position: glam::Vec3::new(-0.5, -0.5, -0.5), normal: glam::Vec3::new(-1.0, 0.0, 0.0) },
-    Vertex { position: glam::Vec3::new(-0.5,  0.5, -0.5), normal: glam::Vec3::new(-1.0, 0.0, 0.0) },
-    Vertex { position: glam::Vec3::new(-0.5,  0.5,  0.5), normal: glam::Vec3::new(-1.0, 0.0, 0.0) },
-
-    // 4. ПРАВАЯ ГРАНЬ (X = 0.5, нормаль X = 1)
-    Vertex { position: glam::Vec3::new( 0.5, -0.5, -0.5), normal: glam::Vec3::new( 1.0, 0.0, 0.0) },
-    Vertex { position: glam::Vec3::new( 0.5, -0.5,  0.5), normal: glam::Vec3::new( 1.0, 0.0, 0.0) },
-    Vertex { position: glam::Vec3::new( 0.5,  0.5,  0.5), normal: glam::Vec3::new( 1.0, 0.0, 0.0) },
-    Vertex { position: glam::Vec3::new( 0.5,  0.5, -0.5), normal: glam::Vec3::new( 1.0, 0.0, 0.0) },
-
-    // 5. ВЕРХНЯЯ ГРАНЬ (Y = 0.5, normal Y = 1)
-    Vertex { position: glam::Vec3::new(-0.5,  0.5, -0.5), normal: glam::Vec3::new(0.0,  1.0, 0.0) },
-    Vertex { position: glam::Vec3::new( 0.5,  0.5, -0.5), normal: glam::Vec3::new(0.0,  1.0, 0.0) },
-    Vertex { position: glam::Vec3::new( 0.5,  0.5,  0.5), normal: glam::Vec3::new(0.0,  1.0, 0.0) },
-    Vertex { position: glam::Vec3::new(-0.5,  0.5,  0.5), normal: glam::Vec3::new(0.0,  1.0, 0.0) },
-
-    // 6. НИЖНЯЯ ГРАНЬ (Y = -0.5, normal Y = -1)
-    Vertex { position: glam::Vec3::new(-0.5, -0.5,  0.5), normal: glam::Vec3::new(0.0, -1.0, 0.0) },
-    Vertex { position: glam::Vec3::new( 0.5, -0.5,  0.5), normal: glam::Vec3::new(0.0, -1.0, 0.0) },
-    Vertex { position: glam::Vec3::new( 0.5, -0.5, -0.5), normal: glam::Vec3::new(0.0, -1.0, 0.0) },
-    Vertex { position: glam::Vec3::new(-0.5, -0.5, -0.5), normal: glam::Vec3::new(0.0, -1.0, 0.0) },
-];
-
-const CUBE_INDICES: &[u16] = &[
-     0,  2,  1,  0,  3,  2, // Передняя (Перевернута наружу)
-     4,  6,  5,  4,  7,  6, // Задняя (Перевернута наружу)
-     8, 10,  9,  8, 11, 10, // Левая (Перевернута наружу)
-    12, 14, 13, 12, 15, 14, // Правая (Перевернута наружу)
-    16, 18, 17, 16, 19, 18, // Верхняя (Перевернута наружу)
-    20, 22, 21, 20, 23, 22, // Нижняя (Перевернута наружу)
-];
+        Self { v1, v2, v3, normal }
+    }
+}
 
 pub struct CubeApp {
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
+    instance_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
     bind_group0: cube::bind_groups::BindGroup0,
     render_pipeline: wgpu::RenderPipeline,
@@ -79,21 +44,40 @@ impl AppLogic for CubeApp {
         surface_format: wgpu::TextureFormat,
         _window: Arc<Window>,
     ) -> Self {
-        // ШАГ 1. Создаем буфер вершин на видеокарте
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let instance_cube_tris = [
+            // 1. ПЕРЕДНЯЯ ГРАНЬ (Z = -0.5)
+            TriangleInstance::new(glam::Vec3::new(-0.5, -0.5, -0.5), glam::Vec3::new(-0.5,  0.5, -0.5), glam::Vec3::new( 0.5,  0.5, -0.5)),
+            TriangleInstance::new(glam::Vec3::new(-0.5, -0.5, -0.5), glam::Vec3::new( 0.5,  0.5, -0.5), glam::Vec3::new( 0.5, -0.5, -0.5)),
+
+            // 2. ЗАДНЯЯ ГРАНЬ (Z = 0.5)
+            TriangleInstance::new(glam::Vec3::new(-0.5, -0.5,  0.5), glam::Vec3::new( 0.5,  0.5,  0.5), glam::Vec3::new(-0.5,  0.5,  0.5)),
+            TriangleInstance::new(glam::Vec3::new(-0.5, -0.5,  0.5), glam::Vec3::new( 0.5, -0.5,  0.5), glam::Vec3::new( 0.5,  0.5,  0.5)),
+
+            // 3. ЛЕВАЯ ГРАНЬ (X = -0.5)
+            TriangleInstance::new(glam::Vec3::new(-0.5, -0.5,  0.5), glam::Vec3::new(-0.5,  0.5, -0.5), glam::Vec3::new(-0.5, -0.5, -0.5)),
+            TriangleInstance::new(glam::Vec3::new(-0.5, -0.5,  0.5), glam::Vec3::new(-0.5,  0.5,  0.5), glam::Vec3::new(-0.5,  0.5, -0.5)),
+
+            // 4. ПРАВАЯ ГРАНЬ (X = 0.5)
+            TriangleInstance::new(glam::Vec3::new( 0.5, -0.5, -0.5), glam::Vec3::new( 0.5,  0.5, -0.5), glam::Vec3::new( 0.5, -0.5,  0.5)),
+            TriangleInstance::new(glam::Vec3::new( 0.5, -0.5,  0.5), glam::Vec3::new( 0.5,  0.5, -0.5), glam::Vec3::new( 0.5,  0.5,  0.5)),
+
+            // 5. ВЕРХНЯЯ ГРАНЬ (Y = 0.5)
+            TriangleInstance::new(glam::Vec3::new(-0.5,  0.5, -0.5), glam::Vec3::new(-0.5,  0.5,  0.5), glam::Vec3::new( 0.5,  0.5,  0.5)),
+            TriangleInstance::new(glam::Vec3::new(-0.5,  0.5, -0.5), glam::Vec3::new( 0.5,  0.5,  0.5), glam::Vec3::new( 0.5,  0.5, -0.5)),
+
+            // 6. НИЖНЯЯ ГРАНЬ (Y = -0.5)
+            TriangleInstance::new(glam::Vec3::new(-0.5, -0.5, -0.5), glam::Vec3::new( 0.5, -0.5,  0.5), glam::Vec3::new(-0.5, -0.5,  0.5)),
+            TriangleInstance::new(glam::Vec3::new(-0.5, -0.5, -0.5), glam::Vec3::new( 0.5, -0.5, -0.5), glam::Vec3::new( 0.5, -0.5,  0.5)), 
+        ];
+        
+        // Создаем буфер треугольников
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Cube Vertex Buffer"),
-            contents: bytemuck::cast_slice(CUBE_VERTICES), // Безопасно превращаем вершины в байты
+            contents: bytemuck::cast_slice(&instance_cube_tris), // Безопасно превращаем вершины в байты
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        // ШАГ 2. Создаем буфер индексов на видеокарте
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Cube Index Buffer"),
-            contents: bytemuck::cast_slice(CUBE_INDICES),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        // ШАГ 3. Создаем Uniform-буфер для матриц и времени
+        // Создаем Uniform-буфер для матриц и времени
         // Используем сгенерированный тип cube::CubeUniform!
         let uniform_size = std::num::NonZeroU64::new(
             <cube::CubeUniform as encase::ShaderType>::min_size().get()
@@ -106,45 +90,41 @@ impl AppLogic for CubeApp {
             mapped_at_creation: false,
         });
 
-        // ШАГ 4. Привязываем физический Uniform-буфер к BindGroup
+        // Привязываем физический Uniform-буфер к BindGroup
         // Генератор кода wgsl_to_wgpu создал для нас готовую структуру разметки!
         let bindings = cube::bind_groups::BindGroupLayout0 {
             uf: uniform_buffer.as_entire_buffer_binding(),
         };
         let bind_group0 = cube::bind_groups::BindGroup0::from_bindings(device, bindings);
 
-        // ШАГ 5. Описываем разметку вершин для графического конвейера
+        // Описываем разметку вершин для графического конвейера
         // Сколько байт весит одна вершина? 3 поплавка позиции + 3 поплавка нормали = 24 байта.
-        let vertex_buffer_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
+        let instance_buffer_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<TriangleInstance>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance, // ИСПРАВЛЕНО НА INSTANCE!
             attributes: &[
-                // location(0) в шейдере: position
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // location(1) в шейдере: normal (начинается после 12 байт позиции)
-                wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<glam::Vec3>() as wgpu::BufferAddress,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
+                // location(0): v1
+                wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
+                // location(1): v2 (через 12 байт от старта)
+                wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
+                // location(2): v3 (через 24 байта от старта)
+                wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x3 },
+                // location(3): normal (через 36 байт от старта)
+                wgpu::VertexAttribute { offset: 36, shader_location: 3, format: wgpu::VertexFormat::Float32x3 },
             ],
         };
 
-        // ШАГ 6. Создаем Layout пайплайна (схему привязок) через генератор в одну строчку
+        // Создаем Layout пайплайна (схему привязок) через генератор в одну строчку
         let pipeline_layout = cube::create_pipeline_layout(device);
 
-        // ШАГ 7. Собираем сам графический конвейер (Render Pipeline)
+        // Собираем сам графический конвейер (Render Pipeline)
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Cube Render Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &cube::create_shader_module(device),
                 entry_point: Some(cube::ENTRY_VERTEX_MAIN),
-                buffers: &[Some(vertex_buffer_layout)], 
+                buffers: &[Some(instance_buffer_layout)], 
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -177,8 +157,7 @@ impl AppLogic for CubeApp {
 
         // Возвращаем полностью готовый экземпляр нашего приложения
         CubeApp {
-            vertex_buffer,
-            index_buffer,
+            instance_buffer,
             uniform_buffer,
             bind_group0,
             render_pipeline,
@@ -197,14 +176,14 @@ impl AppLogic for CubeApp {
     ) {
         // ---- ЧАСТЬ 1: МАТЕМАТИКА И ОБНОВЛЕНИЕ UNIFORM НА CPU ----
 
-        // 1. Считаем время в секундах с момента старта приложения
+        // Считаем время в секундах с момента старта приложения
         let elapsed_time = self.start_time.elapsed().as_secs_f32();
 
-        // 2. Считаем углы вращения куба (пусть по оси X крутится чуть медленнее, чем по Y)
+        // Считаем углы вращения куба (пусть по оси X крутится чуть медленнее, чем по Y)
         let angle_x = elapsed_time * 0.5;
         let angle_y = elapsed_time * 0.8;
 
-        // 3. Создаем матрицы вращения с помощью библиотеки glam
+        // Создаем матрицы вращения с помощью библиотеки glam
         let rotation_x = glam::Mat3::from_rotation_x(angle_x);
         let rotation_y = glam::Mat3::from_rotation_y(angle_y);
         
@@ -214,18 +193,18 @@ impl AppLogic for CubeApp {
         // Позиция камеры: отодвинем её назад по оси Z на 5 единиц, чтобы видеть куб целиком
         let camera_position = glam::Vec3::new(0.0, 0.0, 8.0);
 
-        // 4. Заполняем нашу сгенерированную структуру CubeUniform данными
+        // Заполняем нашу сгенерированную структуру CubeUniform данными
         let uniform_data = cube::CubeUniform {
             camera_mat: final_rotation_mat,
             camera_pos: camera_position,
             time: elapsed_time,
         };
 
-        // 5. Сериализуем структуру в байты по стандарту WGSL с помощью библиотеки encase
+        // Сериализуем структуру в байты по стандарту WGSL с помощью библиотеки encase
         let mut byte_buffer = encase::UniformBuffer::new(Vec::new());
         byte_buffer.write(&uniform_data).unwrap();
 
-        // 6. Отправляем получившиеся байты в Uniform-буфер на видеокарту через очередь (queue)
+        // Отправляем получившиеся байты в Uniform-буфер на видеокарту через очередь (queue)
         queue.write_buffer(&self.uniform_buffer, 0, &byte_buffer.into_inner());
 
 
@@ -250,24 +229,15 @@ impl AppLogic for CubeApp {
             multiview_mask: None,
         });
 
-        // 1. Устанавливаем скомпилированный графический конвейер куба
+        // Устанавливаем скомпилированный графический конвейер куба
         render_pass.set_pipeline(&self.render_pipeline);
 
-        // 2. Привязываем буфер вершин к слоту 0 (как указано в разметке vertex_buffer_layout)
-        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        // Привязываем буфер вершин к слоту 0 (как указано в разметке vertex_buffer_layout)
+        render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
 
-        // 3. Привязываем буфер индексов. Мы использовали тип u16, поэтому указываем IndexFormat::Uint16
-        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-
-        // 4. Подключаем нашу группу привязок (Uniform-буфер) через сгенерированную функцию
+        // Подключаем нашу группу привязок (Uniform-буфер) через сгенерированную функцию
         cube::set_bind_groups(&mut render_pass, &self.bind_group0);
 
-        // 5. Финальная команда: рисуем куб по индексам!
-        // 36 — это общее количество индексов в массиве CUBE_INDICES (6 граней по 2 треугольника по 3 вершины)
-        // 0..1 — означает, что мы рисуем ровно один экземпляр куба (без инстансинга)
-        render_pass.draw_indexed(0..36, 0, 0..1);
-
-        // Автоматически закрываем рендер-пасс при выходе из области видимости метода,
-        // возвращая управление системному энкодеру.
+        render_pass.draw(0..3, 0..12);
     }
 }

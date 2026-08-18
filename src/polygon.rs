@@ -46,7 +46,7 @@ impl Polygon {
         let edge2 = self.v3 - self.v1;
 
         // 2. Считаем и нормализуем нормаль
-        self.normal = edge1.cross(edge2).normalize_or_zero();
+        self.normal = edge1.cross(edge2).normalize_or_zero() * -1.0;
 
         // 3. Считаем ограничивающий контейнер (AABB) для BVH
         self.min = self.v1.min(self.v2).min(self.v3);

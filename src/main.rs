@@ -1,15 +1,16 @@
 pub mod system;
 pub mod green_app;
 pub mod cube_app;
-pub mod instance_cube;
 pub mod shaders;
 pub mod polygon;
 pub mod bvh;
 pub mod obj_parser;
 pub mod ray_app;
+pub mod fps_counter;
+pub mod camera;
 
 use winit::event_loop::{ControlFlow, EventLoop};
-use crate::system::App;
+use crate::{ray_app::RayApp, system::App};
 
 fn main() {
     // wgpu uses `log` for all of our logging, so we initialize a logger with the `env_logger` crate.
@@ -35,6 +36,6 @@ fn main() {
     // let mut app = crate::system::App::default();
 
 
-    let mut app = App::<ray_app::RayApp>::new();
+    let mut app = App::<RayApp>::new();
     event_loop.run_app(&mut app).unwrap();
 }

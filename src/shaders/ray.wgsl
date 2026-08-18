@@ -119,6 +119,8 @@ fn ton_mapping(x: vec3f) -> vec3f {
 }
 
 fn poly_intersect(ro: vec3f, rd: vec3f, poly: Polygon) -> f32 {
+    if (dot(rd, poly.normal) >= 0.0) { return -1.0; }
+
     let local_ro = poly.global_to_local * (ro - poly.origin);
     let local_rd = poly.global_to_local * rd;
 
@@ -189,7 +191,7 @@ fn cast_ray(ro: vec3f, rd: vec3f) -> RayHit {
 
     // Объявляем стек для индексов коробок. 
     // Дерева глубиной до 32 уровней хватит на миллионы треугольников.
-    var stack: array<i32, 16>;
+    var stack: array<i32, 20>;
     var stackPtr: i32 = 0;
 
     var currentNodeIdx: i32 = 0; // Начинаем с корня (всегда индекс 0)
@@ -371,7 +373,10 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
         let rd = normalize(uf.camera_mat * vec3f(uv + uf.pixel_size * vec2f(random_f32(), random_f32()), uf.camera_zoom));
         let hit = cast_ray(ro, rd); 
         let refl = reflect_ray(ro, rd, hit);
-        color = refl.color * min(1., pow(1 / (1 + hit.dist - 5), 0.7));
+        // color = vec3f(1.) * (1. - min(1.0, max(0.0, hit.dist * (1. / 2.2) - 0.3)));
+        color = refl.color * (1. - min(1.0, max(0.0, hit.dist * (1. / 4.))));
+        // color = vec3f(1.) * min(1., pow(0.1 / (1 + hit.dist - 0.), 0.7));
+        // color = refl.color * min(1., pow(0.1 / (1 + hit.dist - 0.5), 0.7));
     }
     
     return vec4f(color, 1.0);
