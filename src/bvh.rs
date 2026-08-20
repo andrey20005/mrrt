@@ -136,8 +136,8 @@ impl BvhNode {
         let second_child = Self::new_bvh(polygons, right_range, max_layers - 1, max_polygons);
 
         Self {
-            min: total_min - Vec3::splat(max_layers as f32 / 32. * 0.0001),
-            max: total_max + Vec3::splat(max_layers as f32 / 32. * 0.0001),
+            min: total_min,
+            max: total_max,
             polygon_range,
             is_leaf: false,
             first_child: Some(Box::new(first_child)),

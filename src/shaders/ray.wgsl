@@ -253,14 +253,12 @@ fn cast_ray(ro: vec3f, rd: vec3f) -> RayHit {
     // var keep_running = true;
     // while (keep_running) {
     //     let node = bvh[currentNodeIdx];
-
     //     if (node.poly_count > 0) {
     //         // ЛИСТ
     //         let box_dist = box_intersect(node.box_min, node.box_max, ro, inv_dir);
     //         if (box_dist >= 0. && box_dist < min_dist) {
     //             let startPoly = node.sec_child_or_first_poly;
     //             let endPoly = startPoly + node.poly_count;
-
     //             for (var i: i32 = startPoly; i < endPoly; i = i + 1) {
     //                 let dist = poly_intersect(ro, rd, polygons[i]);
     //                 if (dist > 0.0 && dist < min_dist) {
@@ -269,7 +267,6 @@ fn cast_ray(ro: vec3f, rd: vec3f) -> RayHit {
     //                 }
     //             }
     //         }
-
     //         // Закончили с листом, достаем следующую ноду из стека
     //         if (stack_ptr == 0) {
     //             keep_running = false; // Стек пуст, обход завершен
@@ -281,18 +278,14 @@ fn cast_ray(ro: vec3f, rd: vec3f) -> RayHit {
     //         // ВНУТРЕННИЙ УЗЕЛ
     //         let firstChildIdx  = currentNodeIdx + 1;
     //         let secondChildIdx = node.sec_child_or_first_poly;
-
     //         let child1 = bvh[firstChildIdx];
     //         let child2 = bvh[secondChildIdx];
-
     //         let t1 = box_intersect(child1.box_min, child1.box_max, ro, inv_dir);
     //         let t2 = box_intersect(child2.box_min, child2.box_max, ro, inv_dir);
-
     //         // Проверяем, пересекаются ли дочерние коробки, 
     //         // и лежат ли они ближе, чем наше ТЕКУЩЕЕ ближайшее попадание (min_dist)
     //         let hit1 = t1 >= 0.0 && t1 < min_dist;
     //         let hit2 = t2 >= 0.0 && t2 < min_dist;
-
     //         if (hit1 && hit2) {
     //             // Магия оптимизации по расстоянию: 
     //             // Сначала идем в ту коробку, которая ближе, а дальнюю кладем в стек.

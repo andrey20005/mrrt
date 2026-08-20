@@ -56,16 +56,16 @@ impl AppLogic for RayApp {
             ("cornell_box_lamp.obj",             Vec3::new(1.0, 1.0, 1.0) * 5., -2.0, Vec3::ZERO, Mat3::from_diagonal(Vec3::new(2., 1., 2.))),
 
             // Пример: Сюзанна (зеркальная, сдвинута влево)
-            // ("suzanne.obj", Vec3::new(0.9, 0.9, 0.9), 0.55, Vec3::new(0.35, 0., 0.51), Mat4::IDENTITY),
-            ("suzanne_low.obj", Vec3::new(0.9, 0.9, 0.9), 0.55, Vec3::new(0.35, 0., 0.51), Mat3::IDENTITY),
+            // ("suzanne.obj", Vec3::new(0.9, 0.9, 0.9), 1.0, Vec3::new(0.35, 0.001, 0.51), Mat4::IDENTITY),
+            ("suzanne_low.obj", Vec3::new(0.9, 0.9, 0.9), 1.0, Vec3::new(0.35, 0.001, 0.51), Mat3::IDENTITY),
             
             // Пример: Дракон (полуматовый, развернут и сдвинут вправо)
-            ("dragon.obj",  Vec3::new(0.8, 0.7, 0.4), 0.15, Vec3::new(-0.11, 0., -0.42), Mat3::from_rotation_y(-40.0_f32.to_radians())),
-            // ("dragon_low.obj",  Vec3::new(0.8, 0.7, 0.4), 0.15, Vec3::new(-0.11, 0., -0.42), Mat3::from_rotation_y(-40.0_f32.to_radians())),
+            // ("dragon.obj",  Vec3::new(0.8, 0.7, 0.4), 0.5, Vec3::new(-0.11, 0.001, -0.42), Mat3::from_rotation_y(-40.0_f32.to_radians())),
+            ("dragon_low.obj",  Vec3::new(0.8, 0.7, 0.4), 0.5, Vec3::new(-0.11, 0.001, -0.42), Mat3::from_rotation_y(-40.0_f32.to_radians())),
             
             // Пример: Сфера (матовая, приподнята)
-            // ("sphere.obj",  Vec3::new(0.99, 0.87, 0.91), 1.0, Vec3::new(-0.43, 0., -0.04), Mat4::IDENTITY),
-            ("sphere_low.obj", Vec3::new(0.9, 0.7, 0.8), 1.0, Vec3::new(-0.43, 0., -0.04), Mat3::IDENTITY),
+            // ("sphere.obj",  Vec3::new(0.99, 0.87, 0.91), 0.0, Vec3::new(-0.43, 0.001, -0.04), Mat4::IDENTITY),
+            ("sphere_low.obj", Vec3::new(0.9, 0.7, 0.8), 0.0, Vec3::new(-0.43, 0.001, -0.04), Mat3::IDENTITY),
         ];
 
         for (file_name, color, mat_type, translation, rotation) in models_config {
