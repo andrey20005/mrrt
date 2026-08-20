@@ -1,6 +1,8 @@
 struct Uniform {
     // секунд с начала работы программы 
     time: f32,
+    pw: u32,
+    ph: u32,
     // просто коэффициенты для вывода правильного uv
     aspect: vec2f,
     // вращение камеры 
@@ -118,8 +120,10 @@ fn ton_mapping(x: vec3f) -> vec3f {
     return x * 1.2 / (x + vec3f(1.0));
 }
 
+var<private> poly_intersect_count: i32 = 0;
 fn poly_intersect(ro: vec3f, rd: vec3f, poly: Polygon) -> f32 {
-    if (dot(rd, poly.normal) >= 0.0) { return -1.0; }
+    poly_intersect_count++;
+    // if (dot(rd, poly.normal) >= 0.0) { return -1.0; }
 
     let local_ro = poly.global_to_local * (ro - poly.origin);
     let local_rd = poly.global_to_local * rd;
@@ -136,11 +140,13 @@ fn poly_intersect(ro: vec3f, rd: vec3f, poly: Polygon) -> f32 {
     }
     return -1.0;
 }
-
+var<private> box_intersect_count: i32 = 0;
 fn box_intersect(
     box_min: vec3<f32>, box_max: vec3<f32>, 
     ro: vec3<f32>, inv_dir: vec3<f32>
 ) -> f32 {
+    box_intersect_count++;
+
     let t0 = (box_min - ro) * inv_dir;
     let t1 = (box_max - ro) * inv_dir;
     
@@ -164,114 +170,160 @@ fn get_inv_dir(rd: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(1.0 / sx, 1.0 / sy, 1.0 / sz);
 }
 
-// логика bvh
-
 struct RayHit {
     hit_poly_idx: i32,
     dist: f32,
 }
 
 fn cast_ray(ro: vec3f, rd: vec3f) -> RayHit {
-    var minDist = 1000000.0;
+    var min_dist = 1000000.0;
 
     var hit_poly_idx: i32 = -1; 
 
-    // --- Проход по динамическим полигонам сцены ---
-    // for (var i: u32 = 0u; i < uf.polygons_count; i = i + 1u) {
-    //     let dist = poly_intersect(ro, rd, polygons[i]);
-    //     if (dist > 0.0 && dist < minDist) {
-    //         minDist = dist;
-    //         hit_poly_idx = i32(i);
-    //     }
-    // }
-
     // --- НАЧАЛО ОБХОДА BVH ---
-
-    let inv_dir = get_inv_dir(rd); // Считаем один раз для всех коробок
-
-    // Объявляем стек для индексов коробок. 
-    // Дерева глубиной до 32 уровней хватит на миллионы треугольников.
-    var stack: array<i32, 20>;
-    var stackPtr: i32 = 0;
-
-    var currentNodeIdx: i32 = 0; // Начинаем с корня (всегда индекс 0)
+    let inv_dir = get_inv_dir(rd);
+    var stack: array<i32, 32>;
+    var stack_ptr: i32 = 0;
+    var currentNodeIdx: i32 = 0;
     var keep_running = true;
-
+    var node: BvhNode;
     while (keep_running) {
-        let node = bvh[currentNodeIdx];
+        currentNodeIdx = stack[stack_ptr];
+        node = bvh[currentNodeIdx];
+        stack_ptr = stack_ptr - 1;
 
         if (node.poly_count > 0) {
-            // ==========================================
-            // ЛИСТ: Проверяем полигоны внутри этой коробки
-            // ==========================================
-            let startPoly = node.sec_child_or_first_poly;
-            let endPoly = startPoly + node.poly_count;
+            // ЛИСТ
+            let box_dist = box_intersect(node.box_min, node.box_max, ro, inv_dir);
+            if (box_dist >= 0. && box_dist < min_dist) {
+                let startPoly = node.sec_child_or_first_poly;
+                let endPoly = startPoly + node.poly_count;
 
-            for (var i: i32 = startPoly; i < endPoly; i = i + 1) {
-                let dist = poly_intersect(ro, rd, polygons[i]);
-                // Важно: проверяем, что пересечение ближе, чем уже найденное (minDist)
-                if (dist > 0.0 && dist < minDist) {
-                    minDist = dist;
-                    hit_poly_idx = i;
+                for (var i: i32 = startPoly; i < endPoly; i = i + 1) {
+                    let polygon = polygons[i];
+                    if (polygon.t >= 0. || dot(rd, polygon.normal) < 0.) {
+                        let dist = poly_intersect(ro, rd, polygons[i]);
+                        if (dist > 0.0 && dist < min_dist) {
+                            min_dist = dist;
+                            hit_poly_idx = i;
+                        }
+                    }
                 }
-            }
-
-            // Закончили с листом, достаем следующую ноду из стека
-            if (stackPtr == 0) {
-                keep_running = false; // Стек пуст, обход завершен
-            } else {
-                stackPtr = stackPtr - 1;
-                currentNodeIdx = stack[stackPtr];
             }
         } else {
-            // ==========================================
-            // ВНУТРЕННИЙ УЗЕЛ: Проверяем обе дочерние коробки
-            // ==========================================
-            let firstChildIdx  = currentNodeIdx + 1;
-            let secondChildIdx = node.sec_child_or_first_poly;
+            let box_dist = box_intersect(node.box_min, node.box_max, ro, inv_dir);
+            if (box_dist >= 0. && box_dist < min_dist) {
+                let child1_idx  = currentNodeIdx + 1;
+                let child2_idx = node.sec_child_or_first_poly;
 
-            let child1 = bvh[firstChildIdx];
-            let child2 = bvh[secondChildIdx];
+                let child1 = bvh[child1_idx];
+                let child2 = bvh[child2_idx];
 
-            let t1 = box_intersect(child1.box_min, child1.box_max, ro, inv_dir);
-            let t2 = box_intersect(child2.box_min, child2.box_max, ro, inv_dir);
+                let ch1_dist = box_intersect(child1.box_min, child1.box_max, ro, inv_dir);
+                let ch2_dist = box_intersect(child2.box_min, child2.box_max, ro, inv_dir);
 
-            // Проверяем, пересекаются ли дочерние коробки, 
-            // и лежат ли они ближе, чем наше ТЕКУЩЕЕ ближайшее попадание (minDist)
-            let hit1 = t1 >= 0.0 && t1 < minDist;
-            let hit2 = t2 >= 0.0 && t2 < minDist;
-
-            if (hit1 && hit2) {
-                // Магия оптимизации по расстоянию: 
-                // Сначала идем в ту коробку, которая ближе, а дальнюю кладем в стек.
-                if (t1 < t2) {
-                    stack[stackPtr] = secondChildIdx; // Дальняя — в стек
-                    stackPtr = stackPtr + 1;
-                    currentNodeIdx = firstChildIdx;  // В ближнюю идем сейчас
-                } else {
-                    stack[stackPtr] = firstChildIdx;
-                    stackPtr = stackPtr + 1;
-                    currentNodeIdx = secondChildIdx;
-                }
-            } else if (hit1) {
-                currentNodeIdx = firstChildIdx;
-            } else if (hit2) {
-                currentNodeIdx = secondChildIdx;
-            } else {
-                // Промазали мимо обеих коробок — достаем ноду из стека
-                if (stackPtr == 0) {
-                    keep_running = false;
-                } else {
-                    stackPtr = stackPtr - 1;
-                    currentNodeIdx = stack[stackPtr];
+                if (ch1_dist >= 0. && ch1_dist < min_dist) {
+                    if (ch2_dist >= 0 && ch2_dist < min_dist) {
+                        stack_ptr += 2;
+                        if (ch1_dist < ch2_dist) {
+                            stack[stack_ptr-1] = child2_idx;
+                            stack[stack_ptr] = child1_idx;
+                        } else {
+                            stack[stack_ptr-1] = child1_idx;
+                            stack[stack_ptr] = child2_idx;
+                        }
+                    } else {
+                        stack_ptr++;
+                        stack[stack_ptr] = child1_idx;
+                    }
+                } else if (ch2_dist >= 0 && ch2_dist < min_dist) {
+                    stack_ptr++;
+                    stack[stack_ptr] = child2_idx;
                 }
             }
         }
+
+        keep_running = stack_ptr >= 0;
     }
+
+    // let inv_dir = get_inv_dir(rd); // Считаем один раз для всех коробок
+    // var stack: array<i32, 32>;
+    // var stack_ptr: i32 = 0;
+    // var currentNodeIdx: i32 = 0; // Начинаем с корня (всегда индекс 0)
+    // var keep_running = true;
+    // while (keep_running) {
+    //     let node = bvh[currentNodeIdx];
+
+    //     if (node.poly_count > 0) {
+    //         // ЛИСТ
+    //         let box_dist = box_intersect(node.box_min, node.box_max, ro, inv_dir);
+    //         if (box_dist >= 0. && box_dist < min_dist) {
+    //             let startPoly = node.sec_child_or_first_poly;
+    //             let endPoly = startPoly + node.poly_count;
+
+    //             for (var i: i32 = startPoly; i < endPoly; i = i + 1) {
+    //                 let dist = poly_intersect(ro, rd, polygons[i]);
+    //                 if (dist > 0.0 && dist < min_dist) {
+    //                     min_dist = dist;
+    //                     hit_poly_idx = i;
+    //                 }
+    //             }
+    //         }
+
+    //         // Закончили с листом, достаем следующую ноду из стека
+    //         if (stack_ptr == 0) {
+    //             keep_running = false; // Стек пуст, обход завершен
+    //         } else {
+    //             stack_ptr = stack_ptr - 1;
+    //             currentNodeIdx = stack[stack_ptr];
+    //         }
+    //     } else {
+    //         // ВНУТРЕННИЙ УЗЕЛ
+    //         let firstChildIdx  = currentNodeIdx + 1;
+    //         let secondChildIdx = node.sec_child_or_first_poly;
+
+    //         let child1 = bvh[firstChildIdx];
+    //         let child2 = bvh[secondChildIdx];
+
+    //         let t1 = box_intersect(child1.box_min, child1.box_max, ro, inv_dir);
+    //         let t2 = box_intersect(child2.box_min, child2.box_max, ro, inv_dir);
+
+    //         // Проверяем, пересекаются ли дочерние коробки, 
+    //         // и лежат ли они ближе, чем наше ТЕКУЩЕЕ ближайшее попадание (min_dist)
+    //         let hit1 = t1 >= 0.0 && t1 < min_dist;
+    //         let hit2 = t2 >= 0.0 && t2 < min_dist;
+
+    //         if (hit1 && hit2) {
+    //             // Магия оптимизации по расстоянию: 
+    //             // Сначала идем в ту коробку, которая ближе, а дальнюю кладем в стек.
+    //             if (t1 < t2) {
+    //                 stack[stack_ptr] = secondChildIdx; // Дальняя — в стек
+    //                 stack_ptr = stack_ptr + 1;
+    //                 currentNodeIdx = firstChildIdx;  // В ближнюю идем сейчас
+    //             } else {
+    //                 stack[stack_ptr] = firstChildIdx;
+    //                 stack_ptr = stack_ptr + 1;
+    //                 currentNodeIdx = secondChildIdx;
+    //             }
+    //         } else if (hit1) {
+    //             currentNodeIdx = firstChildIdx;
+    //         } else if (hit2) {
+    //             currentNodeIdx = secondChildIdx;
+    //         } else {
+    //             // Промазали мимо обеих коробок — достаем ноду из стека
+    //             if (stack_ptr == 0) {
+    //                 keep_running = false;
+    //             } else {
+    //                 stack_ptr = stack_ptr - 1;
+    //                 currentNodeIdx = stack[stack_ptr];
+    //             }
+    //         }
+    //     }
+    // }
 
     // --- КОНЕЦ ОБХОДА BVH ---
 
-    return RayHit(hit_poly_idx, minDist);
+    return RayHit(hit_poly_idx, min_dist);
 }
 
 struct RayReflection {
@@ -282,7 +334,7 @@ struct RayReflection {
 };
 
 fn reflect_ray(ro: vec3f, rd: vec3f, rayHit: RayHit) -> RayReflection {
-    var hitColor = uf.background_color;
+    var hit_color = uf.background_color;
     var terminal = true;
     let hit_poly_idx = rayHit.hit_poly_idx;
     let dist = rayHit.dist;
@@ -292,33 +344,44 @@ fn reflect_ray(ro: vec3f, rd: vec3f, rayHit: RayHit) -> RayReflection {
     // Если луч задел какой-то полигон, обрабатываем его материал
     if (hit_poly_idx != -1) {
         let poly = polygons[hit_poly_idx];
+
+        var t = poly.t;
+        if (t < 0.) { // если t отрицательное то полигон виден только с одной стороны
+            t = -t;
+            // if (dot(poly.normal, ro) <= 0.) {
+            //     hit_color = vec3f(1.);
+            //     newRo = ro + rd * dist + poly.normal * 0.0001;
+            //     newRd = rd;
+            //     return RayReflection(hit_color, terminal, newRo, newRd);
+            // }
+        }
         
         var normal = poly.normal;
         if (dot(rd, poly.normal) > 0.0) { normal = -poly.normal; }
 
         newRo = ro + rd * dist + normal * 0.0001;
         
-        if (poly.t == 2.0) {
+        if (t == 2.0) {
             // Режим 2: Свечение
-            hitColor = poly.color;
+            hit_color = poly.color;
             terminal = true;
         } 
-        else if (poly.t == 0.0) {
+        else if (t == 0.0) {
             // Режим 0: Идеальное зеркало
-            hitColor = poly.color;
+            hit_color = poly.color;
             newRd = reflect(rd, normal);
             terminal = false;
         } 
-        else if (poly.t == 1.0) {
+        else if (t == 1.0) {
             // Режим 1: Идеально матовая поверхность
-            hitColor = poly.color;
+            hit_color = poly.color;
             newRd = rand3d_cosine_hemisphere(normal);
             terminal = false;
         } 
-        else if (poly.t > 0.0 && poly.t < 1.0) {
+        else if (t > 0.0 && t < 1.0) {
             // Режим от 0 до 1: Частично матовый материал
-            hitColor = poly.color;
-            // hitColor = poly.color * 0.5 + normal;
+            hit_color = poly.color;
+            // hit_color = poly.color * 0.5 + normal;
             let diffuse = rand3d_cosine_hemisphere(normal);
             let specular = reflect(rd, normal);
             
@@ -327,12 +390,12 @@ fn reflect_ray(ro: vec3f, rd: vec3f, rayHit: RayHit) -> RayReflection {
         } 
         else {
             // Некорректное значение t — возвращаем отладочный ярко-розовый цвет
-            hitColor = vec3f(10.0, 0.0, 10.0);
+            hit_color = vec3f(10.0, 0.0, 10.0);
             terminal = true;
         }
     }
 
-    return RayReflection(hitColor, terminal, newRo, newRd);
+    return RayReflection(hit_color, terminal, newRo, newRd);
 }
 
 fn trace_ray(ro_in: vec3f, rd_in: vec3f) -> vec3f {
@@ -350,6 +413,24 @@ fn trace_ray(ro_in: vec3f, rd_in: vec3f) -> vec3f {
         rd = refl.newRd;
     }
     return col;
+}
+
+// Функция плавного шага для изоляции цветовых диапазонов
+fn smooth_step(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// Перевод f32 [0.0 - 1.0] в классический спектр теплокарты (Синий -> Зеленый -> Желтый -> Красный)
+fn thermal_palette(t: f32) -> vec3f {
+    let x = clamp(t, 0.0, 1.0);
+    
+    // Рассчитываем интенсивность для каждого канала
+    let r = smooth_step(0.4, 0.7, x);
+    let g = smooth_step(0.1, 0.4, x) - smooth_step(0.7, 0.9, x);
+    let b = smooth_step(0.0, 0.2, x) - smooth_step(0.4, 0.6, x) + smooth_step(0.9, 1.0, x) * 0.5;
+
+    return vec3f(r, g, b);
 }
 
 @fragment
@@ -377,7 +458,18 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
         color = refl.color * (1. - min(1.0, max(0.0, hit.dist * (1. / 4.))));
         // color = vec3f(1.) * min(1., pow(0.1 / (1 + hit.dist - 0.), 0.7));
         // color = refl.color * min(1., pow(0.1 / (1 + hit.dist - 0.5), 0.7));
+    } else if uf.graphics_mode == 3 {
+        let ro = uf.camera_pos;
+        let rd = normalize(uf.camera_mat * vec3f(uv + uf.pixel_size * vec2f(random_f32(), random_f32()), uf.camera_zoom));
+        cast_ray(ro, rd);
+
+        const mm = 400.0;
+        // let a = min(1.0, f32(poly_intersect_count) / mm + f32(box_intersect_count) / mm);
+        // let a = min(1.0, f32(poly_intersect_count) / mm);
+        let a = min(1.0, f32(box_intersect_count) / mm);
+        // color = vec3f(a);
+        color = thermal_palette(a);
     }
-    
+
     return vec4f(color, 1.0);
 }

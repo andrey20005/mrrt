@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use glam::Vec3;
+use glam::{Mat3, Vec2, Vec3};
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::window::Window;
@@ -24,6 +24,8 @@ pub struct RayApp {
     bind_group0: ray::bind_groups::BindGroup0,
     start_time:  std::time::Instant,
 
+    pw:             u32,
+    ph:             u32,
     aspect:         glam::Vec2,
     pixel_size:     f32,
     polygons_count: u32,
@@ -47,23 +49,23 @@ impl AppLogic for RayApp {
         // Кортеж содержит: (Имя файла, Цвет, Тип материала, Вектор смещения, Матрица поворота)
         let models_config = [
             // Системная коробка Корнелла (белая, красная, зеленая стены и лампа)
-            ("cornell_box_walls_and_floor.obj",  glam::Vec3::new(0.8, 0.8, 0.8),      1.0, glam::Vec3::ZERO, glam::Mat4::IDENTITY),
-            ("cornell_box_red_wall.obj",         glam::Vec3::new(0.99, 0.05, 0.05),   1.0, glam::Vec3::ZERO, glam::Mat4::IDENTITY),
-            ("cornell_box_green_wall.obj",       glam::Vec3::new(0.05, 0.99, 0.05),   1.0, glam::Vec3::ZERO, glam::Mat4::IDENTITY),
-            ("cornell_box_blue_wall.obj",         glam::Vec3::new(0.05, 0.05, 0.99),   1.0, glam::Vec3::ZERO, glam::Mat4::IDENTITY),
-            ("cornell_box_lamp.obj",             glam::Vec3::new(1.0, 1.0, 1.0) * 5., 2.0, glam::Vec3::ZERO, glam::Mat4::IDENTITY),
+            ("cornell_box_walls_and_floor.obj",  Vec3::new(0.8, 0.8, 0.8),      -1.0, Vec3::ZERO, Mat3::IDENTITY),
+            ("cornell_box_red_wall.obj",         Vec3::new(0.99, 0.05, 0.05),   -1.0, Vec3::ZERO, Mat3::IDENTITY),
+            ("cornell_box_green_wall.obj",       Vec3::new(0.05, 0.99, 0.05),   -1.0, Vec3::ZERO, Mat3::IDENTITY),
+            ("cornell_box_blue_wall.obj",        Vec3::new(0.05, 0.05, 0.99),   -1.0, Vec3::ZERO, Mat3::IDENTITY),
+            ("cornell_box_lamp.obj",             Vec3::new(1.0, 1.0, 1.0) * 5., -2.0, Vec3::ZERO, Mat3::from_diagonal(Vec3::new(2., 1., 2.))),
 
             // Пример: Сюзанна (зеркальная, сдвинута влево)
-            // ("suzanne.obj", glam::Vec3::new(0.9, 0.9, 0.9), 0.55, glam::Vec3::new(0.35, 0., 0.51), glam::Mat4::IDENTITY),
-            ("suzanne_low.obj", glam::Vec3::new(0.9, 0.9, 0.9), 0.55, glam::Vec3::new(0.35, 0., 0.51), glam::Mat4::IDENTITY),
+            // ("suzanne.obj", Vec3::new(0.9, 0.9, 0.9), 0.55, Vec3::new(0.35, 0., 0.51), Mat4::IDENTITY),
+            ("suzanne_low.obj", Vec3::new(0.9, 0.9, 0.9), 0.55, Vec3::new(0.35, 0., 0.51), Mat3::IDENTITY),
             
             // Пример: Дракон (полуматовый, развернут и сдвинут вправо)
-            // ("dragon.obj",  glam::Vec3::new(0.8, 0.7, 0.4), 0.35, glam::Vec3::new(-0.11, 0., -0.42), glam::Mat4::from_rotation_y(-40.0_f32.to_radians())),
-            ("dragon_low.obj",  glam::Vec3::new(0.8, 0.7, 0.4), 0.35, glam::Vec3::new(-0.11, 0., -0.42), glam::Mat4::from_rotation_y(-40.0_f32.to_radians())),
+            ("dragon.obj",  Vec3::new(0.8, 0.7, 0.4), 0.15, Vec3::new(-0.11, 0., -0.42), Mat3::from_rotation_y(-40.0_f32.to_radians())),
+            // ("dragon_low.obj",  Vec3::new(0.8, 0.7, 0.4), 0.15, Vec3::new(-0.11, 0., -0.42), Mat3::from_rotation_y(-40.0_f32.to_radians())),
             
             // Пример: Сфера (матовая, приподнята)
-            // ("sphere.obj",  glam::Vec3::new(0.99, 0.87, 0.91), 1.0, glam::Vec3::new(-0.43, 0., -0.04), glam::Mat4::IDENTITY),
-            ("sphere_low.obj",  glam::Vec3::new(0.9, 0.7, 0.8), 1.0, glam::Vec3::new(-0.43, 0., -0.04), glam::Mat4::IDENTITY),
+            // ("sphere.obj",  Vec3::new(0.99, 0.87, 0.91), 1.0, Vec3::new(-0.43, 0., -0.04), Mat4::IDENTITY),
+            ("sphere_low.obj", Vec3::new(0.9, 0.7, 0.8), 1.0, Vec3::new(-0.43, 0., -0.04), Mat3::IDENTITY),
         ];
 
         for (file_name, color, mat_type, translation, rotation) in models_config {
@@ -75,7 +77,7 @@ impl AppLogic for RayApp {
                         let model_slice = &mut scene_polygons[r];
                         model_slice.transform(rotation);
                         model_slice.translate(translation);
-                        model_slice.transform(glam::Mat4::from_diagonal(glam::Vec4::new(1., 1., -1., 1.)));
+                        model_slice.transform(Mat3::from_diagonal(Vec3::new(1., 1., -1.)));
                     }
                 } else { log::error!("Ошибка: Не удалось распарсить файл {}", file_name); }
             } else { log::warn!("Предупреждение: Не удалось прочитать файл {}", path); }
@@ -84,21 +86,20 @@ impl AppLogic for RayApp {
         // Страховочный треугольник, если папка assets пуста
         if scene_polygons.is_empty() {
             scene_polygons.push(Polygon::new(
-                glam::Vec3::new(-1.0, -1.0, -1.0),
-                glam::Vec3::new( 1.0, -1.0, -1.0),
-                glam::Vec3::new( 0.0,  1.0, -1.0),
-                glam::Vec3::new(1.0, 0.5, 0.0),
+                Vec3::new(-1.0, -1.0, -1.0),
+                Vec3::new( 1.0, -1.0, -1.0),
+                Vec3::new( 0.0,  1.0, -1.0),
+                Vec3::new(1.0, 0.5, 0.0),
                 1.0,
             ));
         }
-        let polygons_count = scene_polygons.len() as u32;
+        let polygons_count = scene_polygons.len();
 
         // Строим BVH дерево
         let total_range = 0..polygons_count;
         let bvh_start_time = std::time::Instant::now();
-        
         // Строим дерево
-        let bvh_tree = BvhNode::new_bvh(&mut scene_polygons, total_range, 16, 3);
+        let bvh_tree = BvhNode::new_bvh(&mut scene_polygons, total_range, 30, 3);
 
         let bvh_duration = bvh_start_time.elapsed();
         let bvh_stats = bvh_tree.collect_stats();
@@ -188,7 +189,7 @@ impl AppLogic for RayApp {
         let size = window.inner_size();
         let w = size.width as f32;
         let h = size.height as f32;
-        let aspect = glam::Vec2::new(1.0f32.max(w / h), 1.0f32.max(h / w));
+        let aspect = Vec2::new(1.0f32.max(w / h), 1.0f32.max(h / w));
         let pixel_size = 2.0 / w.min(h);
 
         let camera = Camera::new(Vec3::new(-2.0, 0.9, 0.0), -6.0, 90.0, 1.5, false);
@@ -201,9 +202,11 @@ impl AppLogic for RayApp {
             camera,
             bind_group0,
             start_time: std::time::Instant::now(),
+            pw: size.width,
+            ph: size.height,
             aspect,
             pixel_size,
-            polygons_count,
+            polygons_count: polygons_count as u32,
             fps_counter: FrameTimeCounter::new(5.0),
             last_frame_instant: std::time::Instant::now(),
             time_accumulator: 0.0,
@@ -211,9 +214,11 @@ impl AppLogic for RayApp {
     }
 
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        self.pw = new_size.width;
+        self.ph = new_size.height;
         let w = new_size.width as f32;
         let h = new_size.height as f32;
-        self.aspect = glam::Vec2::new(1.0f32.max(w / h), 1.0f32.max(h / w));
+        self.aspect = Vec2::new(1.0f32.max(w / h), 1.0f32.max(h / w));
         self.pixel_size = 2.0 / w.min(h);
     }
 
@@ -251,18 +256,20 @@ impl AppLogic for RayApp {
 
         let uniform_data = ray::Uniform {
             time: elapsed,
+            pw: self.pw,
+            ph: self.ph, 
             aspect: self.aspect,
             camera_mat: self.camera.rotation_matrix(),
             camera_pos: self.camera.position(),
             camera_zoom: self.camera.zoom(),
-            // camera_mat: glam::Mat3::from_rotation_y(90_f32.to_radians()) * glam::Mat3::from_rotation_x(6_f32.to_radians()),
-            // camera_pos: glam::Vec3::new(-5.0, 1.46, 0.0),
+            // camera_mat: Mat3::from_rotation_y(90_f32.to_radians()) * Mat3::from_rotation_x(6_f32.to_radians()),
+            // camera_pos: Vec3::new(-5.0, 1.46, 0.0),
             // camera_zoom: 4.,
             pixel_size: self.pixel_size,
-            background_color: glam::Vec3::splat(0.1),
+            background_color: Vec3::splat(0.1),
             polygons_count: self.polygons_count,
             bounces: 4,
-            samples: 15,
+            samples: 1,
             graphics_mode: 1,
         };
 

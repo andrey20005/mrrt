@@ -80,7 +80,7 @@ pub trait PolygonSliceExt {
     /// Сдвигает все полигоны в срезе на вектор сдвига
     fn translate(&mut self, offset: Vec3);
     /// Трансформирует все полигоны в срезе с помощью матрицы 4х4
-    fn transform(&mut self, matrix: Mat4);
+    fn transform(&mut self, matrix: Mat3);
 }
 
 // Реализуем этот трейт для любого изменяемого среза полигонов
@@ -96,12 +96,12 @@ impl PolygonSliceExt for [Polygon] {
         }
     }
 
-    fn transform(&mut self, matrix: Mat4) {
+    fn transform(&mut self, matrix: Mat3) {
         for poly in self.iter_mut() {
             // Умножаем Vec3 на Mat4 (с учетом четвертой компоненты w = 1.0 для корректного переноса)
-            poly.v1 = matrix.transform_point3(poly.v1);
-            poly.v2 = matrix.transform_point3(poly.v2);
-            poly.v3 = matrix.transform_point3(poly.v3);
+            poly.v1 = matrix * poly.v1;
+            poly.v2 = matrix * poly.v2;
+            poly.v3 = matrix * poly.v3;
             
             // Обязательный вызов пересчета зависимых полей
             poly.update();

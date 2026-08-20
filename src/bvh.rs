@@ -7,7 +7,7 @@ use crate::shaders::ray as ray_gpu; // Доступ к сгенерирован�
 pub struct BvhNode {
     pub min: Vec3,
     pub max: Vec3,
-    pub polygon_range: Range<u32>,
+    pub polygon_range: Range<usize>,
     pub is_leaf: bool,
     pub first_child: Option<Box<BvhNode>>,
     pub second_child: Option<Box<BvhNode>>,
@@ -26,9 +26,9 @@ pub struct BvhStats {
 
 impl BvhNode {
     /// Создает узел-лист. Он просто рассчитывает общие границы для своего диапазона полигонов.
-    pub fn new_leaf(polygons: &[Polygon], polygon_range: Range<u32>) -> Self {
-        let mut min = Vec3::splat(f32::INFINITY);
-        let mut max = Vec3::splat(f32::NEG_INFINITY);
+    pub fn new_leaf(polygons: &[Polygon], polygon_range: Range<usize>) -> Self {
+        let mut min = polygons[polygon_range.start].min;
+        let mut max = polygons[polygon_range.start].max;
 
         // Объединяем границы всех полигонов, входящих в этот диапазон
         for poly in &polygons[polygon_range.start as usize..polygon_range.end as usize] {
@@ -49,9 +49,9 @@ impl BvhNode {
     /// Рекурсивно строит BVH-дерево по медиане вдоль самой длинной оси контейнера
     pub fn new_bvh(
         polygons: &mut [Polygon],
-        polygon_range: Range<u32>,
-        max_layers: u32,
-        max_polygons: u32,
+        polygon_range: Range<usize>,
+        max_layers: usize,
+        max_polygons: usize,
     ) -> Self {
         let count = polygon_range.end - polygon_range.start;
 
@@ -60,44 +60,84 @@ impl BvhNode {
             return Self::new_leaf(polygons, polygon_range);
         }
 
-        // Считаем общие границы для текущего диапазона, чтобы узнать размеры коробки
-        let mut min = Vec3::splat(f32::INFINITY);
-        let mut max = Vec3::splat(f32::NEG_INFINITY);
-        for poly in &polygons[polygon_range.start as usize..polygon_range.end as usize] {
-            min = min.min(poly.min);
-            max = max.max(poly.max);
+        // Считаем общие границы для текущего диапазона (они нужны для создания текущего узла)
+        let mut total_min = polygons[polygon_range.start].min;
+        let mut total_max = polygons[polygon_range.start].max;
+        for poly in &polygons[polygon_range.start..polygon_range.end] {
+            total_min = total_min.min(poly.min);
+            total_max = total_max.max(poly.max);
         }
 
         // Находим самую длинную ось нашей коробки (0 = X, 1 = Y, 2 = Z)
-        let size = max - min;
+        let size = total_max - total_min;
         let mut axis = 0;
         if size.y > size.x { axis = 1; }
         if size.z > size[axis] { axis = 2; }
 
-        // Вычисляем индекс середины (локальный для среза и глобальный для диапазонов)
-        let local_mid_idx = (count / 2) as usize;
-        let mid = polygon_range.start + count / 2;
-
-        // Вместо полной сортировки sort_by делим массив пополам за линейное время O(N)
-        let sub_slice = &mut polygons[polygon_range.start as usize..polygon_range.end as usize];
-        sub_slice.select_nth_unstable_by(local_mid_idx, |a, b| {
+        // Сортируем полигоны по центрам вдоль выбранной оси
+        let sub_slice = &mut polygons[polygon_range.start..polygon_range.end];
+        sub_slice.sort_by(|a, b| {
             let center_a = (a.v1[axis] + a.v2[axis] + a.v3[axis]) / 3.0;
             let center_b = (b.v1[axis] + b.v2[axis] + b.v3[axis]) / 3.0;
             center_a.partial_cmp(&center_b).unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // Диапазоны для рекурсии остаются теми же, но массив перегруппирован в разы быстрее
+        // Массив для накопления стоимостей каждого сплита. 
+        // Кандидатов на разрез всего (count - 1), так как пустые дочерние узлы создавать нельзя.
+        let mut all_costs = vec![0.0; count - 1];
+
+        // Прямой проход: считаем площади левых коробок (от 0 до i включительно)
+        let mut left_min = sub_slice[0].min;
+        let mut left_max = sub_slice[0].max;
+        for i in 0..(count - 1) {
+            left_min = left_min.min(sub_slice[i].min);
+            left_max = left_max.max(sub_slice[i].max);
+            let left_count = (i + 1) as f32;
+            all_costs[i] += box_surface_area(left_min, left_max) * left_count;
+        }
+
+        // Обратный проход: добавляем площади правых коробок (от i+1 до конца)
+        let mut right_min = sub_slice[count - 1].min;
+        let mut right_max = sub_slice[count - 1].max;
+        for i in (0..(count - 1)).rev() {
+            right_min = right_min.min(sub_slice[i + 1].min);
+            right_max = right_max.max(sub_slice[i + 1].max);
+            let right_count = (count - 1 - i) as f32;
+            all_costs[i] += box_surface_area(right_min, right_max) * right_count;
+        }
+
+        // Ищем индекс с минимальной стоимостью
+        let mut min_cost = f32::INFINITY;
+        let mut local_mid = 0;
+        for i in 0..(count - 1) {
+            if all_costs[i] < min_cost {
+                min_cost = all_costs[i];
+                local_mid = i;
+            }
+        }
+
+        // Точка разделения: в левую часть уйдут элементы 0..=local_mid (всего local_mid + 1 штук)
+        let mid = polygon_range.start + local_mid + 1;
+        // let mid = (polygon_range.start + polygon_range.end) / 2;
+
+        // Эвристический критерий остановки (необязательно, но полезно):
+        // Если стоимость лучшего разделения выше, чем стоимость создания листа, делаем лист.
+        // Для этого нужно ввести веса Ctrav и Cisect, пока считаем грубо:
+        let leaf_cost = box_surface_area(total_min, total_max) * count as f32;
+        if min_cost >= leaf_cost {
+            return Self::new_leaf(polygons, polygon_range);
+        }
+
         let left_range = polygon_range.start..mid;
         let right_range = mid..polygon_range.end;
 
-        // Рекурсивно создаем детей в куче через Box
-        // (Здесь в будущем можно применить Rayon для многопоточности)
+        // Рекурсивно создаем детей
         let first_child = Self::new_bvh(polygons, left_range, max_layers - 1, max_polygons);
         let second_child = Self::new_bvh(polygons, right_range, max_layers - 1, max_polygons);
 
         Self {
-            min,
-            max,
+            min: total_min - Vec3::splat(max_layers as f32 / 32. * 0.0001),
+            max: total_max + Vec3::splat(max_layers as f32 / 32. * 0.0001),
             polygon_range,
             is_leaf: false,
             first_child: Some(Box::new(first_child)),
@@ -174,8 +214,9 @@ impl BvhNode {
             if node.is_leaf {
                 let count = node.polygon_range.end - node.polygon_range.start;
                 *leaves += 1;
-                *min_p = (*min_p).min(count);
-                *max_p = (*max_p).max(count);
+                *min_p = (*min_p).min(count as u32);
+                *max_p = (*max_p).max(count as u32);
+
                 *sum_p += count as u64;
                 *min_d = (*min_d).min(depth);
                 *max_d = (*max_d).max(depth);
@@ -214,4 +255,9 @@ impl BvhNode {
             avg_depth,
         }
     }
+}
+
+fn box_surface_area(box_min: Vec3, box_max: Vec3) -> f32 {
+    let d = box_max - box_min; // Размеры коробки по осям X, Y, Z
+    return 2.0 * (d.x * d.y + d.y * d.z + d.z * d.x);
 }

@@ -136,6 +136,8 @@ pub struct Polygon {
 #[derive(Debug, Copy, Clone, PartialEq, encase :: ShaderType)]
 pub struct Uniform {
     pub time: f32,
+    pub pw: u32,
+    pub ph: u32,
     pub aspect: glam::Vec2,
     pub camera_mat: glam::Mat3,
     pub camera_pos: glam::Vec3,
