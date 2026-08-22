@@ -76,32 +76,18 @@ impl Camera {
 
     pub fn handle_input(&mut self, event: &WindowEvent) -> bool {
         match event {
-            // 1. Отслеживаем нажатие ЛКМ
+            // Отслеживаем нажатие ЛКМ
             WindowEvent::MouseInput { button: MouseButton::Left, state, .. } => {
                 self.is_lkm_pressed = *state == ElementState::Pressed;
                 true
             }
 
-            // 2. Отслеживаем движение мыши для поворота камеры
-            WindowEvent::CursorMoved { position, .. } => {
-                // В winit WindowEvent дает абсолютные координаты. 
-                // Но для простоты, если ЛКМ зажата, мы можем использовать статическое смещение.
-                // Чтобы MouseMotion работал идеально, в winit используют DeviceEvent, 
-                // но в рамках WindowEvent мы можем накапливать дельту, сохраняя прошлую позицию.
-                // Чтобы не усложнять структуру лишними полями прошлых координат, winit 0.30
-                // позволяет элегантно использовать WindowEvent дельты, если они настроены.
-                // Поступим проще: используем MouseMotion ниже через DeviceEvent или симулируем тут.
+            // Отслеживаем движение мыши для поворота камеры
+            WindowEvent::CursorMoved { .. } => {
                 false
             }
 
-            // Альтернативный и самый надежный способ для WindowEvent: ловить дельту мыши,
-            // если она приходит. В winit 0.30 движение мыши присылает DeviceEvent, 
-            // но мы договорились обрабатывать WindowEvent в системном цикле. 
-            // Для WindowEvent изменение положения курсора обрабатывается так:
-            // (Для точного вращения без прыжков мы настроим дельту в следующем шаге в system.rs,
-            // а пока пишем реакцию на клавиатуру и колесико, которые идеально сидят в WindowEvent)
-            
-            // 3. Отслеживаем прокрутку колесика для ЗУМА
+            // Отслеживаем прокрутку колесика для ЗУМА
             WindowEvent::MouseWheel { delta, .. } => {
                 let scroll_delta = match delta {
                     MouseScrollDelta::LineDelta(_, y) => *y,

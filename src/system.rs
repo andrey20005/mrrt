@@ -7,10 +7,10 @@ use winit::{
 pub trait AppLogic: Sized {
     /// Инициализация: создание пайплайнов и буферов на GPU
     fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        surface_format: wgpu::TextureFormat,
-        window: Arc<Window>,
+        device:          &wgpu::Device,
+        queue:           &wgpu::Queue,
+        surface_format:  wgpu::TextureFormat,
+        window:          Arc<Window>,
     ) -> Self;
 
     /// Изменение размера окна: здесь пересчитываем aspect ratio или размер внутренних текстур
@@ -19,7 +19,7 @@ pub trait AppLogic: Sized {
     /// Обработка ввода и системных событий окна (движение мыши, клавиатура и т.д.)
     /// Возвращает bool: true, если событие перехвачено вашей логикой и winit не должен обрабатывать его дальше
     fn handle_input(&mut self, event: &WindowEvent) -> bool;
-    fn handle_mouse_motion(&mut self, dx: f64, dy: f64) {}
+    fn handle_mouse_motion(&mut self, _dx: f64, _dy: f64) {}
 
     /// Отрисовка кадра на GPU
     fn render(
@@ -147,35 +147,11 @@ impl<T: AppLogic> State<T> {
                 ..Default::default()
             });
 
-        // Renders a GREEN screen
         let mut encoder = self.device.create_command_encoder(&Default::default());
 
         // Отдаем управление прикладной логике. 
         // Она сама запишет в encoder нужные команды (RenderPass/ComputePass).
         self.app_logic.render(&self.device, &self.queue, &texture_view, &mut encoder);
-
-        // // Create the renderpass which will clear the screen.
-        // let renderpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        //     label: None,
-        //     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-        //         view: &texture_view,
-        //         depth_slice: None,
-        //         resolve_target: None,
-        //         ops: wgpu::Operations {
-        //             load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-        //             store: wgpu::StoreOp::Store,
-        //         },
-        //     })],
-        //     depth_stencil_attachment: None,
-        //     timestamp_writes: None,
-        //     occlusion_query_set: None,
-        //     multiview_mask: None,
-        // });
-
-        // // If you wanted to call any drawing commands, they would go here.
-
-        // // End the renderpass.
-        // drop(renderpass);
 
         // Submit the command in the queue to execute
         self.queue.submit([encoder.finish()]);
@@ -241,7 +217,7 @@ impl<T: AppLogic> ApplicationHandler for App<T> {
         }
     }
 
-     fn device_event(
+    fn device_event(
         &mut self,
         _event_loop: &winit::event_loop::ActiveEventLoop,
         _device_id: winit::event::DeviceId,

@@ -1,3 +1,4 @@
-#[allow(dead_code)]
 pub mod cube;
 pub mod ray;
+pub mod texture_mapping;
+pub mod compute;

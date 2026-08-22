@@ -1,8 +1,6 @@
-use std::sync::Arc;
 use glam::{Mat3, Vec2, Vec3};
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
-use winit::window::Window;
 use wgpu::util::DeviceExt;
 
 use crate::camera::Camera;
@@ -37,10 +35,10 @@ pub struct RayApp {
 
 impl AppLogic for RayApp {
     fn new(
-        device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        surface_format: wgpu::TextureFormat,
-        window: Arc<Window>,
+        device:          &wgpu::Device,
+        _queue:          &wgpu::Queue,
+        surface_format:  wgpu::TextureFormat,
+        window:          std::sync::Arc<winit::window::Window>,
     ) -> Self {
         // --- ЗАГРУЗКА ВСЕХ МОДЕЛЕЙ ---
         let mut scene_polygons = Vec::new();
@@ -119,7 +117,6 @@ impl AppLogic for RayApp {
         let gpu_polygons: Vec<ray::Polygon> = scene_polygons.iter().map(|p| p.to_gpu()).collect();
         let gpu_bvh_nodes: Vec<ray::BvhNode> = bvh_tree.to_gpu();
 
-        // Вместо bytemuck используем encase::StorageBuffer для полигонов
         let mut polygons_encase = encase::StorageBuffer::new(Vec::new());
         polygons_encase.write(&gpu_polygons).unwrap();
         let polygons_bytes = polygons_encase.into_inner();
@@ -281,7 +278,7 @@ impl AppLogic for RayApp {
             label: Some("Raytracing Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
-                depth_slice: None, // ИСПРАВЛЕНО: Добавлено обязательное поле для wgpu 30.0
+                depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),

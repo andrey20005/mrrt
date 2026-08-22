@@ -169,7 +169,7 @@ impl AppLogic for CubeApp {
     fn handle_input(&mut self, _event: &WindowEvent) -> bool { false }
         fn render(
         &mut self,
-        device: &wgpu::Device,
+        _device: &wgpu::Device,
         queue: &wgpu::Queue,
         view: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,

@@ -1,4 +1,4 @@
-use glam::{Mat3, Mat4, Vec3};
+use glam::{Mat3, Vec3};
 use crate::shaders::ray as ray_gpu; // Доступ к сгенерированной wgsl_to_wgpu структуре Polygon
 
 /// Тяжелая CPU-структура полигона для логики, парсинга и построения BVH

@@ -1,28 +1,23 @@
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
-use crate::system::AppLogic; // Импортируем ваш переименованный трейт
 use winit::event::{WindowEvent, KeyEvent, ElementState};
 use winit::keyboard::{PhysicalKey, KeyCode};
+
+use crate::app_prelude::{AppLogic, AppState};
 
 pub struct GreenApp;
 
 impl AppLogic for GreenApp {
-    fn new(
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _surface_format: wgpu::TextureFormat,
-        _window: Arc<Window>,
-    ) -> Self {
-        // На этапе старта нам пока ничего не нужно создавать на GPU
+    fn new(stage: &crate::app_prelude::AppState) -> Self {
         GreenApp
     }
 
-    fn resize(&mut self, new_size: PhysicalSize<u32>) {
+    fn resize(&mut self, state: &AppState, new_size: PhysicalSize<u32>) {
         println!("Окно изменило размер: {}x{}", new_size.width, new_size.height);
     }
 
-    fn handle_input(&mut self, event: &WindowEvent) -> bool {
+    fn handle_input(&mut self, state: &AppState, event: &WindowEvent) -> bool {
         match event {
             // Перехватываем ввод с клавиатуры
             WindowEvent::KeyboardInput { 
@@ -60,12 +55,12 @@ impl AppLogic for GreenApp {
     }
 
     fn render(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        view: &wgpu::TextureView,
+        &mut     self, 
+        _state:  &crate::app_prelude::AppState, 
+        view:    &wgpu::TextureView, 
         encoder: &mut wgpu::CommandEncoder,
-    ) {
+    )
+    {
         // Открываем рендер-пасс прямо здесь! 
         // Система передала нам энкодер, и мы пишем в него инструкцию очистки экрана.
         let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
