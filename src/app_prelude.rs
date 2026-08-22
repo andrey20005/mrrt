@@ -13,8 +13,8 @@ pub trait AppLogic: Sized {
 
     /// Обработка ввода и системных событий окна (движение мыши, клавиатура и т.д.)
     /// Возвращает bool: true, если событие перехвачено вашей логикой и winit не должен обрабатывать его дальше
-    fn handle_input(&mut self, state: &AppState, _event: &WindowEvent) -> bool { false }
-    fn handle_mouse_motion(&mut self, state: &AppState, _dx: f64, _dy: f64) {}
+    fn handle_input(&mut self, _state: &AppState, _event: &WindowEvent) -> bool { false }
+    fn handle_mouse_motion(&mut self, _state: &AppState, _dx: f64, _dy: f64) {}
 
     /// Отрисовка кадра на GPU
     fn render(
@@ -73,11 +73,10 @@ impl<T: AppLogic> ApplicationHandler for App<T> {
                 .unwrap(),
         );
 
-        // let display = event_loop.owned_display_handle();
-        // let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
-        //     Box::new(display),
-        // ));
-        let instance = wgpu::Instance::default();
+        let display = event_loop.owned_display_handle();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
+            Box::new(display),
+        ));
         let (adapter, device, queue) = pollster::block_on(async {
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions::default())
@@ -134,49 +133,45 @@ impl<T: AppLogic> ApplicationHandler for App<T> {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                {
-                    let surface_texture = match state.surface.get_current_texture() {
-                        wgpu::CurrentSurfaceTexture::Success(texture) => texture,
-                        wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => return,
-                        wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                            drop(texture);
-                            state.configure_surface();
-                            return;
-                        }
-                        wgpu::CurrentSurfaceTexture::Outdated => {
-                            state.configure_surface();
-                            return;
-                        }
-                        wgpu::CurrentSurfaceTexture::Validation => {
-                            unreachable!("No error scope registered, so validation errors will panic")
-                        }
-                        wgpu::CurrentSurfaceTexture::Lost => {
-                            state.surface = state.instance.create_surface(state.window.clone()).unwrap();
-                            state.configure_surface();
-                            return;
-                        }
-                    };
-                    {
-                        let texture_view = surface_texture
-                            .texture
-                            .create_view(&wgpu::TextureViewDescriptor {
-                                // Without add_srgb_suffix() the image we will be working with
-                                // might not be "gamma correct".
-                                format: Some(state.surface_format.add_srgb_suffix()),
-                                ..Default::default()
-                            });
-                        let mut encoder = state.device.create_command_encoder(&Default::default());
-                        
-                        // Отдаем управление прикладной логике. 
-                        // Она сама запишет в encoder нужные команды (RenderPass/ComputePass).
-                        logic.render(state, &texture_view, &mut encoder);
-
-                        // Submit the command in the queue to execute
-                        state.queue.submit([encoder.finish()]);
+                let surface_texture = match state.surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(texture) => texture,
+                    wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => return,
+                    wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
+                        drop(texture);
+                        state.configure_surface();
+                        return;
                     }
-                    state.window.pre_present_notify();
-                    state.queue.present(surface_texture);
-                }
+                    wgpu::CurrentSurfaceTexture::Outdated => {
+                        state.configure_surface();
+                        return;
+                    }
+                    wgpu::CurrentSurfaceTexture::Validation => {
+                        unreachable!("No error scope registered, so validation errors will panic")
+                    }
+                    wgpu::CurrentSurfaceTexture::Lost => {
+                        state.surface = state.instance.create_surface(state.window.clone()).unwrap();
+                        state.configure_surface();
+                        return;
+                    }
+                };
+                let texture_view = surface_texture
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor {
+                        // Without add_srgb_suffix() the image we will be working with
+                        // might not be "gamma correct".
+                        format: Some(state.surface_format.add_srgb_suffix()),
+                        ..Default::default()
+                    });
+                let mut encoder = state.device.create_command_encoder(&Default::default());
+                
+                // Отдаем управление прикладной логике. 
+                // Она сама запишет в encoder нужные команды (RenderPass/ComputePass).
+                logic.render(state, &texture_view, &mut encoder);
+
+                // Submit the command in the queue to execute
+                state.queue.submit([encoder.finish()]);
+                state.window.pre_present_notify();
+                state.queue.present(surface_texture);
 
                 // Emits a new redraw requested event.
                 // state.window.request_redraw();

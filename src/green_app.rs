@@ -1,6 +1,4 @@
-use std::sync::Arc;
 use winit::dpi::PhysicalSize;
-use winit::window::Window;
 use winit::event::{WindowEvent, KeyEvent, ElementState};
 use winit::keyboard::{PhysicalKey, KeyCode};
 
@@ -9,15 +7,15 @@ use crate::app_prelude::{AppLogic, AppState};
 pub struct GreenApp;
 
 impl AppLogic for GreenApp {
-    fn new(stage: &crate::app_prelude::AppState) -> Self {
+    fn new(_stage: &crate::app_prelude::AppState) -> Self {
         GreenApp
     }
 
-    fn resize(&mut self, state: &AppState, new_size: PhysicalSize<u32>) {
+    fn resize(&mut self, _state: &AppState, new_size: PhysicalSize<u32>) {
         println!("Окно изменило размер: {}x{}", new_size.width, new_size.height);
     }
 
-    fn handle_input(&mut self, state: &AppState, event: &WindowEvent) -> bool {
+    fn handle_input(&mut self, _state: &AppState, event: &WindowEvent) -> bool {
         match event {
             // Перехватываем ввод с клавиатуры
             WindowEvent::KeyboardInput { 
