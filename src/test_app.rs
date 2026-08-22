@@ -128,11 +128,11 @@ impl AppLogic for TestApp {
         view: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        // 1. Обновляем время в Uniform-буфере на GPU
+        // Обновляем время в Uniform-буфере на GPU
         let elapsed = self.start_time.elapsed().as_secs_f32();
         state.queue.write_buffer(&self.time_buffer, 0, bytemuck::cast_slice(&[elapsed]));
 
-        // 2. --- ШАГ 1: ЗАПУСК ВЫЧИСЛИТЕЛЬНОГО ШЕЙДЕРА (COMPUTE PASS) ---
+        // --- ЗАПУСК ВЫЧИСЛИТЕЛЬНОГО ШЕЙДЕРА (COMPUTE PASS) ---
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Gradients Compute Pass"),
@@ -153,7 +153,7 @@ impl AppLogic for TestApp {
             cpass.dispatch_workgroups(workgroup_x, workgroup_y, 1);
         }
 
-        // 3. --- ШАГ 2: ВЫВОД РЕЗУЛЬТАТА НА ЭКРАН (RENDER PASS) ---
+        // --- ВЫВОД РЕЗУЛЬТАТА НА ЭКРАН (RENDER PASS) ---
         // Передаем готовую бинд-группу фрагментного шейдера из текстуры в наш отрисовщик
         self.texture_mapping.render(
             self.render_texture.render_bind_group(),

@@ -1,6 +1,6 @@
 use winit::event_loop::{ControlFlow, EventLoop};
 
-pub mod system;
+// pub mod system;
 pub mod green_app;
 // pub mod cube_app;
 pub mod shaders;
@@ -39,7 +39,8 @@ fn main() {
     // event_loop.set_control_flow(ControlFlow::Wait);
 
     // с помощью дженерика указываем логику приложения
-    let mut app = app_prelude::App::<test_app::TestApp>::new();
     // let mut app = app_prelude::App::<green_app::GreenApp>::new();
+    let mut app = app_prelude::App::<test_app::TestApp>::new();
+    // let mut app = app_prelude::App::<ray_app::RayApp>::new();
     event_loop.run_app(&mut app).unwrap();
 }

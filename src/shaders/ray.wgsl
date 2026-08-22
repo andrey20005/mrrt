@@ -1,8 +1,6 @@
 struct Uniform {
     // секунд с начала работы программы 
     time: f32,
-    pw: u32,
-    ph: u32,
     // просто коэффициенты для вывода правильного uv
     aspect: vec2f,
     // вращение камеры 
@@ -51,29 +49,6 @@ struct BvhNode {
     poly_count: i32 
 }
 @binding(2) @group(0) var<storage, read> bvh: array<BvhNode>;
-
-struct VertexOutput {
-    @builtin(position) position : vec4f,
-    @location(0) uv : vec2f,
-};
-
-// захарткощенный шейдер для выведения фрагментного шейдера на весь экран 
-@vertex
-fn vertex_main(
-    @builtin(vertex_index) vid : u32
-) -> VertexOutput {
-    var position = vec2f();
-    if vid <= 2 {
-        if vid == 0 { position = vec2f( 1,  1); }
-        if vid == 1 { position = vec2f( 1, -1); }
-        if vid == 2 { position = vec2f(-1,  1); }
-    } else {
-        if vid == 3 { position = vec2f( 1, -1); }
-        if vid == 4 { position = vec2f(-1,  1); }
-        if vid == 5 { position = vec2f(-1, -1); }
-    }
-    return VertexOutput(vec4f(position, 0., 1.), position * uf.aspect);
-}
 
 // случайность 
 var<private> rng_state: u32;
@@ -358,13 +333,22 @@ fn thermal_palette(t: f32) -> vec3f {
     return vec3f(r, g, b);
 }
 
-@fragment
-fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
+@binding(3) @group(0) var output_texture: texture_storage_2d<rgba8unorm, write>;
+
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let dimensions = textureDimensions(output_texture);
+    
+    if (global_id.x >= dimensions.x || global_id.y >= dimensions.y) {
+        return;
+    }
+
+    let uv = (vec2<f32>(global_id.xy) / vec2<f32>(dimensions) - 0.5) * uf.aspect;
+
     // сид для рандома
-    rng_state = new_seed_f32(vec4f(uf.time, input.uv.x, input.uv.y, 0));
-    
-    let uv = input.uv;
-    
+    // rng_state = new_seed_f32(vec4f(uv.xy, 0, 0));
+    rng_state = new_seed_f32(vec4f(uf.time, uv.xy, 0));
+
     var color = vec3f(0);
     if uf.graphics_mode == 1 {
         for(var i: u32 = 0; i < uf.samples; i++) {
@@ -396,5 +380,5 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
         color = thermal_palette(a);
     }
 
-    return vec4f(color, 1.0);
+    textureStore(output_texture, vec2<i32>(global_id.xy), vec4f(color, 1.));
 }

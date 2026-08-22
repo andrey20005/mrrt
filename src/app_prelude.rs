@@ -73,16 +73,22 @@ impl<T: AppLogic> ApplicationHandler for App<T> {
                 .unwrap(),
         );
 
-        let display = event_loop.owned_display_handle();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
-            Box::new(display),
-        ));
-        let adapter = pollster::block_on(instance
-            .request_adapter(&wgpu::RequestAdapterOptions::default())
-        ).unwrap();
-        let (device, queue) = pollster::block_on(adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
-        ).unwrap();
+        // let display = event_loop.owned_display_handle();
+        // let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
+        //     Box::new(display),
+        // ));
+        let instance = wgpu::Instance::default();
+        let (adapter, device, queue) = pollster::block_on(async {
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions::default())
+                .await
+                .unwrap();
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor::default())
+                .await
+                .unwrap();
+            (adapter, device, queue)
+        });
 
         let size = window.inner_size();
         
@@ -90,7 +96,7 @@ impl<T: AppLogic> ApplicationHandler for App<T> {
         let cap = surface.get_capabilities(&adapter);
         let surface_format = cap.formats[0];
 
-        let stage = AppState{
+        let state = AppState{
             instance,
             device,
             queue,
@@ -100,21 +106,25 @@ impl<T: AppLogic> ApplicationHandler for App<T> {
             size
         };
 
-        let logic = T::new(&stage);
+        let logic = T::new(&state);
+        state.configure_surface();
         
         self.logic = Some(logic);
-        self.state = Some(stage);
+        self.state = Some(state);
 
         window.request_redraw();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        let window = self.state.as_ref().unwrap().window.clone();
+
         let state = self.state.as_mut().unwrap();
         let logic = self.logic.as_mut().unwrap();
 
         // Сначала отдаем ввод в прикладную логику. 
         // Если метод вернул true — прерываем выполнение и игнорируем системные события.
         if logic.handle_input(state, &event) {
+            state.window.request_redraw();
             return;
         }
 
@@ -124,48 +134,53 @@ impl<T: AppLogic> ApplicationHandler for App<T> {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                let surface_texture = match state.surface.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(texture) => texture,
-                    wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => return,
-                    wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                        drop(texture);
-                        state.configure_surface();
-                        return;
-                    }
-                    wgpu::CurrentSurfaceTexture::Outdated => {
-                        state.configure_surface();
-                        return;
-                    }
-                    wgpu::CurrentSurfaceTexture::Validation => {
-                        unreachable!("No error scope registered, so validation errors will panic")
-                    }
-                    wgpu::CurrentSurfaceTexture::Lost => {
-                        state.surface = state.instance.create_surface(state.window.clone()).unwrap();
-                        state.configure_surface();
-                        return;
-                    }
-                };
-                let texture_view = surface_texture
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor {
-                        // Without add_srgb_suffix() the image we will be working with
-                        // might not be "gamma correct".
-                        format: Some(state.surface_format.add_srgb_suffix()),
-                        ..Default::default()
-                    });
-                let mut encoder = state.device.create_command_encoder(&Default::default());
-                
-                // Отдаем управление прикладной логике. 
-                // Она сама запишет в encoder нужные команды (RenderPass/ComputePass).
-                logic.render(state, &texture_view, &mut encoder);
+                {
+                    let surface_texture = match state.surface.get_current_texture() {
+                        wgpu::CurrentSurfaceTexture::Success(texture) => texture,
+                        wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => return,
+                        wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
+                            drop(texture);
+                            state.configure_surface();
+                            return;
+                        }
+                        wgpu::CurrentSurfaceTexture::Outdated => {
+                            state.configure_surface();
+                            return;
+                        }
+                        wgpu::CurrentSurfaceTexture::Validation => {
+                            unreachable!("No error scope registered, so validation errors will panic")
+                        }
+                        wgpu::CurrentSurfaceTexture::Lost => {
+                            state.surface = state.instance.create_surface(state.window.clone()).unwrap();
+                            state.configure_surface();
+                            return;
+                        }
+                    };
+                    {
+                        let texture_view = surface_texture
+                            .texture
+                            .create_view(&wgpu::TextureViewDescriptor {
+                                // Without add_srgb_suffix() the image we will be working with
+                                // might not be "gamma correct".
+                                format: Some(state.surface_format.add_srgb_suffix()),
+                                ..Default::default()
+                            });
+                        let mut encoder = state.device.create_command_encoder(&Default::default());
+                        
+                        // Отдаем управление прикладной логике. 
+                        // Она сама запишет в encoder нужные команды (RenderPass/ComputePass).
+                        logic.render(state, &texture_view, &mut encoder);
 
-                // Submit the command in the queue to execute
-                state.queue.submit([encoder.finish()]);
-                state.window.pre_present_notify();
-                state.queue.present(surface_texture);
+                        // Submit the command in the queue to execute
+                        state.queue.submit([encoder.finish()]);
+                    }
+                    state.window.pre_present_notify();
+                    state.queue.present(surface_texture);
+                }
 
                 // Emits a new redraw requested event.
-                state.window.request_redraw();
+                // state.window.request_redraw();
+                window.request_redraw();
             }
             WindowEvent::Resized(size) => {
                 // Reconfigures the size of the surface. We do not re-render

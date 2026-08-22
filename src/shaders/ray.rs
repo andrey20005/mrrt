@@ -7,13 +7,14 @@ pub mod bind_groups {
         pub uf: wgpu::BufferBinding<'a>,
         pub polygons: wgpu::BufferBinding<'a>,
         pub bvh: wgpu::BufferBinding<'a>,
+        pub output_texture: &'a wgpu::TextureView,
     }
     const LAYOUT_DESCRIPTOR0: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: Some("LayoutDescriptor0"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -23,7 +24,7 @@ pub mod bind_groups {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
@@ -33,11 +34,21 @@ pub mod bind_groups {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    view_dimension: wgpu::TextureViewDimension::D2,
                 },
                 count: None,
             },
@@ -64,6 +75,10 @@ pub mod bind_groups {
                         binding: 2,
                         resource: wgpu::BindingResource::Buffer(bindings.bvh),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(bindings.output_texture),
+                    },
                 ],
                 label: Some("BindGroup0"),
             });
@@ -89,11 +104,19 @@ pub mod bind_groups {
 pub fn set_bind_groups<P: SetBindGroup>(pass: &mut P, bind_group0: &bind_groups::BindGroup0) {
     bind_group0.set(pass);
 }
-pub fn fragment_main_entry(targets: [Option<wgpu::ColorTargetState>; 1]) -> FragmentEntry<1> {
-    FragmentEntry {
-        entry_point: ENTRY_FRAGMENT_MAIN,
-        targets,
-        constants: Default::default(),
+pub mod compute {
+    pub const MAIN_WORKGROUP_SIZE: [u32; 3] = [16, 16, 1];
+    pub fn create_main_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
+        let module = super::create_shader_module(device);
+        let layout = super::create_pipeline_layout(device);
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Compute Pipeline main"),
+            layout: Some(&layout),
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: Default::default(),
+        })
     }
 }
 pub const SOURCE: &str = include_str!("ray.wgsl");
@@ -121,8 +144,7 @@ pub struct BvhNode {
     pub box_min: glam::Vec3,
     pub poly_count: i32,
 }
-pub const ENTRY_FRAGMENT_MAIN: &str = "fragment_main";
-pub const ENTRY_VERTEX_MAIN: &str = "vertex_main";
+pub const ENTRY_MAIN: &str = "main";
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, encase :: ShaderType)]
 pub struct Polygon {
@@ -136,8 +158,6 @@ pub struct Polygon {
 #[derive(Debug, Copy, Clone, PartialEq, encase :: ShaderType)]
 pub struct Uniform {
     pub time: f32,
-    pub pw: u32,
-    pub ph: u32,
     pub aspect: glam::Vec2,
     pub camera_mat: glam::Mat3,
     pub camera_pos: glam::Vec3,
@@ -148,46 +168,6 @@ pub struct Uniform {
     pub bounces: u32,
     pub samples: u32,
     pub graphics_mode: u32,
-}
-#[derive(Debug)]
-pub struct VertexEntry<const N: usize> {
-    pub entry_point: &'static str,
-    pub buffers: [Option<wgpu::VertexBufferLayout<'static>>; N],
-    pub constants: Vec<(&'static str, f64)>,
-}
-pub fn vertex_state<'a, const N: usize>(
-    module: &'a wgpu::ShaderModule,
-    entry: &'a VertexEntry<N>,
-) -> wgpu::VertexState<'a> {
-    wgpu::VertexState {
-        module,
-        entry_point: Some(entry.entry_point),
-        buffers: &entry.buffers,
-        compilation_options: wgpu::PipelineCompilationOptions {
-            constants: &entry.constants,
-            ..Default::default()
-        },
-    }
-}
-#[derive(Debug)]
-pub struct FragmentEntry<const N: usize> {
-    pub entry_point: &'static str,
-    pub targets: [Option<wgpu::ColorTargetState>; N],
-    pub constants: Vec<(&'static str, f64)>,
-}
-pub fn fragment_state<'a, const N: usize>(
-    module: &'a wgpu::ShaderModule,
-    entry: &'a FragmentEntry<N>,
-) -> wgpu::FragmentState<'a> {
-    wgpu::FragmentState {
-        module,
-        entry_point: Some(entry.entry_point),
-        targets: &entry.targets,
-        compilation_options: wgpu::PipelineCompilationOptions {
-            constants: &entry.constants,
-            ..Default::default()
-        },
-    }
 }
 pub trait SetBindGroup {
     fn set_bind_group(
@@ -225,12 +205,5 @@ impl SetBindGroup for wgpu::RenderBundleEncoder<'_> {
         offsets: &[wgpu::DynamicOffset],
     ) {
         self.set_bind_group(index, bind_group, offsets);
-    }
-}
-pub fn vertex_main_entry() -> VertexEntry<0> {
-    VertexEntry {
-        entry_point: ENTRY_VERTEX_MAIN,
-        buffers: [],
-        constants: Default::default(),
     }
 }

@@ -60,6 +60,8 @@ impl TextureMapping {
         render_pass.set_pipeline(&self.render_pipeline);
         texture_mapping::set_bind_groups(&mut render_pass, bind_group0);
         render_pass.draw(0..6, 0..1);
+
+        drop(render_pass); 
     }
 }
 

@@ -2,44 +2,46 @@ use glam::{Mat3, Vec2, Vec3};
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use wgpu::util::DeviceExt;
+use winit::keyboard::{KeyCode, PhysicalKey};
 
+use crate::app_prelude::{AppLogic, AppState};
 use crate::camera::Camera;
 use crate::fps_counter::FrameTimeCounter;
-use crate::system::AppLogic;
 use crate::polygon::{Polygon, PolygonSliceExt};
 use crate::bvh::BvhNode;
 use crate::obj_parser;
 use crate::shaders::ray;
+use crate::texture_mapping::{RenderTexture, TextureMapping};
 
 pub struct RayApp {
-    render_pipeline: wgpu::RenderPipeline,
-    
+    // Наши вспомогательные инструменты
+    render_texture: RenderTexture,
+    texture_mapping: TextureMapping,
+
+    // Ресурсы для Compute-пасса
+    compute_pipeline: wgpu::ComputePipeline,
+    bind_group0: ray::bind_groups::BindGroup0,
+
+    // буфферы с данными
     uniform_buffer:  wgpu::Buffer,
     polygons_buffer: wgpu::Buffer,
     bvh_buffer:      wgpu::Buffer,
     camera:          Camera,
     
-    bind_group0: ray::bind_groups::BindGroup0,
+    // полезные данные
     start_time:  std::time::Instant,
-
-    pw:             u32,
-    ph:             u32,
     aspect:         glam::Vec2,
     pixel_size:     f32,
     polygons_count: u32,
 
+    // для анализа частоты кадров
     fps_counter:        crate::fps_counter::FrameTimeCounter,
     last_frame_instant: std::time::Instant,
     time_accumulator:   f32,
 }
 
 impl AppLogic for RayApp {
-    fn new(
-        device:          &wgpu::Device,
-        _queue:          &wgpu::Queue,
-        surface_format:  wgpu::TextureFormat,
-        window:          std::sync::Arc<winit::window::Window>,
-    ) -> Self {
+    fn new(state: &AppState) -> Self {
         // --- ЗАГРУЗКА ВСЕХ МОДЕЛЕЙ ---
         let mut scene_polygons = Vec::new();
 
@@ -112,7 +114,7 @@ impl AppLogic for RayApp {
         println!("Полигонов в одном листе:    Мин: {}, Макс: {}, Среднее: {:.2}", bvh_stats.min_poly_in_leaf, bvh_stats.max_poly_in_leaf, bvh_stats.avg_poly_in_leaf);
         println!("==================================================");
 
-        // --- ЧАСТЬ 2: УПАКОВКА В СТРУКТУРЫ ENCASE ДЛЯ GPU ---
+        // --- УПАКОВКА В СТРУКТУРЫ ENCASE ДЛЯ GPU ---
         
         let gpu_polygons: Vec<ray::Polygon> = scene_polygons.iter().map(|p| p.to_gpu()).collect();
         let gpu_bvh_nodes: Vec<ray::BvhNode> = bvh_tree.to_gpu();
@@ -121,7 +123,7 @@ impl AppLogic for RayApp {
         polygons_encase.write(&gpu_polygons).unwrap();
         let polygons_bytes = polygons_encase.into_inner();
 
-        let polygons_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let polygons_buffer = state.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Polygons Storage Buffer"),
             contents: &polygons_bytes, // Передаем корректные encase-байты
             usage: wgpu::BufferUsages::STORAGE,
@@ -132,7 +134,7 @@ impl AppLogic for RayApp {
         bvh_encase.write(&gpu_bvh_nodes).unwrap();
         let bvh_bytes = bvh_encase.into_inner();
 
-        let bvh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let bvh_buffer = state.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("BVH Storage Buffer"),
             contents: &bvh_bytes, // Передаем корректные encase-байты
             usage: wgpu::BufferUsages::STORAGE,
@@ -140,67 +142,54 @@ impl AppLogic for RayApp {
 
         // Создаем Uniform-буфер
         let uniform_size = <ray::Uniform as encase::ShaderType>::min_size();
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniform_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Raytracing Uniform Buffer"),
             size: uniform_size.get(),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        // --- ЧАСТЬ 3: СБОРКА ПАЙПЛАЙНА ---
-        let pipeline_layout = ray::create_pipeline_layout(device);
+        // --- СБОРКА ПАЙПЛАЙНА ---
+        let render_texture = RenderTexture::new(state, 0.5);
+        let texture_mapping = TextureMapping::new(state);
+
+        let pipeline_layout = ray::create_pipeline_layout(&state.device);
+        let compute_module = ray::create_shader_module(&state.device);
 
         let bindings = ray::bind_groups::BindGroupLayout0 {
             uf: uniform_buffer.as_entire_buffer_binding(),
             polygons: polygons_buffer.as_entire_buffer_binding(),
             bvh: bvh_buffer.as_entire_buffer_binding(),
+            output_texture: render_texture.texture_view(),
         };
-        let bind_group0 = ray::bind_groups::BindGroup0::from_bindings(device, bindings);
+        let bind_group0 = ray::bind_groups::BindGroup0::from_bindings(&state.device, bindings);
 
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Raytracing Render Pipeline"),
+        let compute_pipeline = state.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Gradients Compute Pipeline"),
             layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &ray::create_shader_module(device),
-                entry_point: Some(ray::ENTRY_VERTEX_MAIN),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &ray::create_shader_module(device),
-                entry_point: Some(ray::ENTRY_FRAGMENT_MAIN),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
+            module: &compute_module,
+            entry_point: Some(ray::ENTRY_MAIN),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
 
-        let size = window.inner_size();
-        let w = size.width as f32;
-        let h = size.height as f32;
+        let w = state.size.width as f32;
+        let h = state.size.height as f32;
         let aspect = Vec2::new(1.0f32.max(w / h), 1.0f32.max(h / w));
         let pixel_size = 2.0 / w.min(h);
 
         let camera = Camera::new(Vec3::new(-2.0, 0.9, 0.0), -6.0, 90.0, 1.5, false);
 
         Self {
-            render_pipeline,
+            render_texture,
+            texture_mapping,
+            compute_pipeline,
+            bind_group0,
             uniform_buffer,
             polygons_buffer,
             bvh_buffer,
             camera,
-            bind_group0,
             start_time: std::time::Instant::now(),
-            pw: size.width,
-            ph: size.height,
             aspect,
             pixel_size,
             polygons_count: polygons_count as u32,
@@ -210,27 +199,74 @@ impl AppLogic for RayApp {
         }
     }
 
-    fn resize(&mut self, new_size: PhysicalSize<u32>) {
-        self.pw = new_size.width;
-        self.ph = new_size.height;
-        let w = new_size.width as f32;
-        let h = new_size.height as f32;
+    fn resize(&mut self, state: &AppState, new_size: PhysicalSize<u32>) {
+        // Пересчитываем размеры нашей текстуры рендера
+        self.render_texture.resize(state, new_size.width, new_size.height);
+
+        let w = state.size.width as f32;
+        let h = state.size.height as f32;
         self.aspect = Vec2::new(1.0f32.max(w / h), 1.0f32.max(h / w));
         self.pixel_size = 2.0 / w.min(h);
+
+        // ВАЖНО: Так как текстура внутри render_texture пересоздалась, её старый TextureView
+        // стал невалидным. Нам нужно обновить бинд-группу вычислительного шейдера!
+        let bindings = ray::bind_groups::BindGroupLayout0 {
+            uf: self.uniform_buffer.as_entire_buffer_binding(),
+            polygons: self.polygons_buffer.as_entire_buffer_binding(),
+            bvh: self.bvh_buffer.as_entire_buffer_binding(),
+            output_texture: self.render_texture.texture_view(),
+        };
+        self.bind_group0 = ray::bind_groups::BindGroup0::from_bindings(&state.device, bindings);
     }
 
-    fn handle_input(&mut self, event: &WindowEvent) -> bool {
+    fn handle_input(&mut self, state: &AppState, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::KeyboardInput { event: key_event, .. } => {
+                if key_event.state == winit::event::ElementState::Pressed {
+                    match key_event.physical_key {
+                        PhysicalKey::Code(KeyCode::F1) => {
+                            self.render_texture.set_pixel_art_mode(state, true);
+                            let (vw, vh) = self.render_texture.virtual_size();
+                            println!("🎨 Сглаживание: Nearest. Разрешение: {}x{}", vw, vh);
+                            return true;
+                        }
+                        PhysicalKey::Code(KeyCode::F2) => {
+                            self.render_texture.set_pixel_art_mode(state, false);
+                            let (vw, vh) = self.render_texture.virtual_size();
+                            println!("🎬 Сглаживание:  Linear. Разрешение: {}x{}", vw, vh);
+                            return true;
+                        }
+                        // Изменение масштаба рендера для теста производительности (F3 - 50%, F4 - 100%)
+                        PhysicalKey::Code(KeyCode::F3) => {
+                            self.render_texture.set_scale(state, 0.5);
+                            self.resize(state, state.size); // Пересоздаем бинд-группы
+                            let (vw, vh) = self.render_texture.virtual_size();
+                            println!("🚀 Масштаб рендера:  50%. Разрешение: {}x{}", vw, vh);
+                            return true;
+                        }
+                        PhysicalKey::Code(KeyCode::F4) => {
+                            self.render_texture.set_scale(state, 1.0);
+                            self.resize(state, state.size);
+                            let (vw, vh) = self.render_texture.virtual_size();
+                            println!("🖥️ Масштаб рендера: 100%. Разрешение: {}x{}", vw, vh);
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
         self.camera.handle_input(event)
     }
 
-    fn handle_mouse_motion(&mut self, dx: f64, dy: f64) {
+    fn handle_mouse_motion(&mut self, _state: &AppState, dx: f64, dy: f64) {
         self.camera.handle_mouse_motion(dx, dy);
     }
 
     fn render(
         &mut self,
-        _device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        state: &AppState,
         view: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
     ) {
@@ -253,8 +289,6 @@ impl AppLogic for RayApp {
 
         let uniform_data = ray::Uniform {
             time: elapsed,
-            pw: self.pw,
-            ph: self.ph, 
             aspect: self.aspect,
             camera_mat: self.camera.rotation_matrix(),
             camera_pos: self.camera.position(),
@@ -272,33 +306,38 @@ impl AppLogic for RayApp {
 
         let mut byte_buffer = encase::UniformBuffer::new(Vec::new());
         byte_buffer.write(&uniform_data).unwrap();
-        queue.write_buffer(&self.uniform_buffer, 0, &byte_buffer.into_inner());
+        state.queue.write_buffer(&self.uniform_buffer, 0, &byte_buffer.into_inner());
 
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Raytracing Render Pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
+        // --- ЗАПУСК ВЫЧИСЛИТЕЛЬНОГО ШЕЙДЕРА (COMPUTE PASS) ---
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Gradients Compute Pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.compute_pipeline);
+            
+            // Применяем сгенерированную бинд-группу для вычислений
+            ray::set_bind_groups(&mut cpass, &self.bind_group0);
 
-        render_pass.set_pipeline(&self.render_pipeline);
-        ray::set_bind_groups(&mut render_pass, &self.bind_group0);
-        render_pass.draw(0..6, 0..1);
+            // Получаем виртуальный размер нашей текстуры рендера
+            let (v_width, v_height) = self.render_texture.virtual_size();
+            
+            // Считаем сетку рабочих групп (делим размер текстуры на размер группы 16х16 с округлением вверх)
+            let workgroup_x = (v_width + 15) / 16;
+            let workgroup_y = (v_height + 15) / 16;
+            
+            cpass.dispatch_workgroups(workgroup_x, workgroup_y, 1);
+        }
 
-        // let now = std::time::Instant::now();
+        // --- ВЫВОД РЕЗУЛЬТАТА НА ЭКРАН (RENDER PASS) ---
+        // Передаем готовую бинд-группу фрагментного шейдера из текстуры в наш отрисовщик
+        self.texture_mapping.render(
+            self.render_texture.render_bind_group(),
+            state,
+            view,
+            encoder,
+        );
 
-        // // println!("{:.1}", now.duration_since(self.last_frame_instant).as_secs_f32());
-        // if now.duration_since(self.last_frame_instant).as_secs_f32() >= 3. {
-        //     println!("FPS: {:.1} | 1% Low: {:.1}", self.fps_counter.get_avg_fps(1.), self.fps_counter.get_percentile_fps(0.01, 1.));
-        //     self.last_frame_instant = now;
-        // }
         self.fps_counter.tick();
     }
 }
