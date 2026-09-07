@@ -33,10 +33,12 @@ pub struct AppState {
     pub surface:         wgpu::Surface<'static>,
     pub surface_format:  wgpu::TextureFormat,
     pub size:            winit::dpi::PhysicalSize<u32>,
+
+    is_configured: bool,
 }
 
 impl AppState {
-    fn configure_surface(&self) {
+    fn configure_surface(&mut self) {
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: self.surface_format,
@@ -50,6 +52,7 @@ impl AppState {
             present_mode: wgpu::PresentMode::AutoVsync,
         };
         self.surface.configure(&self.device, &surface_config);
+        self.is_configured = true;
     }
 }
 
@@ -95,14 +98,16 @@ impl<T: AppLogic> ApplicationHandler for App<T> {
         let cap = surface.get_capabilities(&adapter);
         let surface_format = cap.formats[0];
 
-        let state = AppState{
-            instance,
-            device,
-            queue,
-            window: window.clone(),
-            surface,
-            surface_format,
-            size
+        let mut state = AppState{ 
+            instance, 
+            device, 
+            queue, 
+            window: window.clone(), 
+            surface, 
+            surface_format, 
+            size, 
+
+            is_configured: false, 
         };
 
         let logic = T::new(&state);
@@ -110,8 +115,6 @@ impl<T: AppLogic> ApplicationHandler for App<T> {
         
         self.logic = Some(logic);
         self.state = Some(state);
-
-        window.request_redraw();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -133,6 +136,9 @@ impl<T: AppLogic> ApplicationHandler for App<T> {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                window.request_redraw();
+                if !state.is_configured { return; }
+
                 let surface_texture = match state.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(texture) => texture,
                     wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => return,

@@ -105,15 +105,41 @@ pub fn set_bind_groups<P: SetBindGroup>(pass: &mut P, bind_group0: &bind_groups:
     bind_group0.set(pass);
 }
 pub mod compute {
-    pub const MAIN_WORKGROUP_SIZE: [u32; 3] = [16, 16, 1];
-    pub fn create_main_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
+    pub const MAIN_MODE1_WORKGROUP_SIZE: [u32; 3] = [16, 16, 1];
+    pub fn create_main_mode1_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
         let module = super::create_shader_module(device);
         let layout = super::create_pipeline_layout(device);
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Compute Pipeline main"),
+            label: Some("Compute Pipeline main_mode1"),
             layout: Some(&layout),
             module: &module,
-            entry_point: Some("main"),
+            entry_point: Some("main_mode1"),
+            compilation_options: Default::default(),
+            cache: Default::default(),
+        })
+    }
+    pub const MAIN_MODE2_WORKGROUP_SIZE: [u32; 3] = [16, 16, 1];
+    pub fn create_main_mode2_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
+        let module = super::create_shader_module(device);
+        let layout = super::create_pipeline_layout(device);
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Compute Pipeline main_mode2"),
+            layout: Some(&layout),
+            module: &module,
+            entry_point: Some("main_mode2"),
+            compilation_options: Default::default(),
+            cache: Default::default(),
+        })
+    }
+    pub const MAIN_MODE3_WORKGROUP_SIZE: [u32; 3] = [16, 16, 1];
+    pub fn create_main_mode3_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
+        let module = super::create_shader_module(device);
+        let layout = super::create_pipeline_layout(device);
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Compute Pipeline main_mode3"),
+            layout: Some(&layout),
+            module: &module,
+            entry_point: Some("main_mode3"),
             compilation_options: Default::default(),
             cache: Default::default(),
         })
@@ -144,7 +170,9 @@ pub struct BvhNode {
     pub box_min: glam::Vec3,
     pub poly_count: i32,
 }
-pub const ENTRY_MAIN: &str = "main";
+pub const ENTRY_MAIN_MODE1: &str = "main_mode1";
+pub const ENTRY_MAIN_MODE2: &str = "main_mode2";
+pub const ENTRY_MAIN_MODE3: &str = "main_mode3";
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, encase :: ShaderType)]
 pub struct Polygon {
@@ -167,7 +195,6 @@ pub struct Uniform {
     pub polygons_count: u32,
     pub bounces: u32,
     pub samples: u32,
-    pub graphics_mode: u32,
 }
 pub trait SetBindGroup {
     fn set_bind_group(

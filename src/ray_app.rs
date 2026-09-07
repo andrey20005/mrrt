@@ -8,7 +8,7 @@ use crate::app_prelude::{AppLogic, AppState};
 use crate::camera::Camera;
 use crate::fps_counter::FrameTimeCounter;
 use crate::polygon::{Polygon, PolygonSliceExt};
-use crate::bvh::BvhNode;
+use crate::bvh::{self, BvhNode};
 use crate::obj_parser;
 use crate::shaders::ray;
 use crate::texture_mapping::{RenderTexture, TextureMapping};
@@ -56,7 +56,7 @@ impl AppLogic for RayApp {
             ("cornell_box_lamp.obj",             Vec3::new(1.0, 1.0, 1.0) * 5., -2.0, Vec3::ZERO, Mat3::from_diagonal(Vec3::new(2., 1., 2.))),
 
             // Пример: Сюзанна (зеркальная, сдвинута влево)
-            // ("suzanne.obj", Vec3::new(0.9, 0.9, 0.9), 1.0, Vec3::new(0.35, 0.001, 0.51), Mat4::IDENTITY),
+            // ("suzanne.obj", Vec3::new(0.9, 0.9, 0.9), 1.0, Vec3::new(0.35, 0.001, 0.51), Mat3::IDENTITY),
             ("suzanne_low.obj", Vec3::new(0.9, 0.9, 0.9), 1.0, Vec3::new(0.35, 0.001, 0.51), Mat3::IDENTITY),
             
             // Пример: Дракон (полуматовый, развернут и сдвинут вправо)
@@ -64,7 +64,7 @@ impl AppLogic for RayApp {
             ("dragon_low.obj",  Vec3::new(0.8, 0.7, 0.4), 0.5, Vec3::new(-0.11, 0.001, -0.42), Mat3::from_rotation_y(-40.0_f32.to_radians())),
             
             // Пример: Сфера (матовая, приподнята)
-            // ("sphere.obj",  Vec3::new(0.99, 0.87, 0.91), 0.0, Vec3::new(-0.43, 0.001, -0.04), Mat4::IDENTITY),
+            // ("sphere.obj",  Vec3::new(0.99, 0.87, 0.91), 0.0, Vec3::new(-0.43, 0.001, -0.04), Mat3::IDENTITY),
             ("sphere_low.obj", Vec3::new(0.9, 0.7, 0.8), 0.0, Vec3::new(-0.43, 0.001, -0.04), Mat3::IDENTITY),
         ];
 
@@ -96,10 +96,10 @@ impl AppLogic for RayApp {
         let polygons_count = scene_polygons.len();
 
         // Строим BVH дерево
-        let total_range = 0..polygons_count;
         let bvh_start_time = std::time::Instant::now();
-        // Строим дерево
-        let bvh_tree = BvhNode::new_bvh(&mut scene_polygons, total_range, 30, 3);
+        // let bvh_tree = BvhNode::new_bvh::<bvh::median_split::MedianSplit>(&mut scene_polygons, 25, 4);
+        let bvh_tree = BvhNode::new_bvh::<bvh::binned_sah_split::BinnedSahSplit>(&mut scene_polygons, 25, 4);
+        // let bvh_tree = BvhNode::new_bvh::<bvh::sah_split::SahSplit>(&mut scene_polygons, 25, 4);
 
         let bvh_duration = bvh_start_time.elapsed();
         let bvh_stats = bvh_tree.collect_stats();
@@ -150,7 +150,7 @@ impl AppLogic for RayApp {
         });
 
         // --- СБОРКА ПАЙПЛАЙНА ---
-        let render_texture = RenderTexture::new(state, 0.5);
+        let render_texture = RenderTexture::new(state, 0.9);
         let texture_mapping = TextureMapping::new(state);
 
         let pipeline_layout = ray::create_pipeline_layout(&state.device);
@@ -168,7 +168,7 @@ impl AppLogic for RayApp {
             label: Some("Gradients Compute Pipeline"),
             layout: Some(&pipeline_layout),
             module: &compute_module,
-            entry_point: Some(ray::ENTRY_MAIN),
+            entry_point: Some(ray::ENTRY_MAIN_MODE1),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
@@ -301,7 +301,6 @@ impl AppLogic for RayApp {
             polygons_count: self.polygons_count,
             bounces: 4,
             samples: 1,
-            graphics_mode: 1,
         };
 
         let mut byte_buffer = encase::UniformBuffer::new(Vec::new());

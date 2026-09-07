@@ -16,7 +16,7 @@ struct Uniform {
     polygons_count: u32,
     bounces: u32,
     samples: u32,
-    graphics_mode: u32
+    // graphics_mode: u32
 }
 @binding(0) @group(0) var<uniform> uf: Uniform;
 
@@ -76,9 +76,6 @@ fn rand3d_cosine_hemisphere(n: vec3f) -> vec3f {
     
     let local_dir = vec3f(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - r_sq)));
     
-    // ИСПРАВЛЕНИЕ: Безопасный выбор вспомогательного вектора.
-    // Если нормаль почти совпадает с осью X, берем ось Y. Иначе всегда берем ось X.
-    // Это на 100% защищает от NaN на полах vec3f(0, 1, 0) и стенах.
     let up = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(n.x) > 0.9);
     
     let tangent = normalize(cross(up, n));
@@ -335,50 +332,109 @@ fn thermal_palette(t: f32) -> vec3f {
 
 @binding(3) @group(0) var output_texture: texture_storage_2d<rgba8unorm, write>;
 
-@compute @workgroup_size(16, 16)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let dimensions = textureDimensions(output_texture);
+// @compute @workgroup_size(16, 16)
+// fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+//     let dimensions = textureDimensions(output_texture);
     
-    if (global_id.x >= dimensions.x || global_id.y >= dimensions.y) {
-        return;
-    }
+//     if (global_id.x >= dimensions.x || global_id.y >= dimensions.y) {
+//         return;
+//     }
 
+//     let uv = (vec2<f32>(global_id.xy) / vec2<f32>(dimensions) - 0.5) * uf.aspect;
+
+//     // сид для рандома
+//     // rng_state = new_seed_f32(vec4f(uv.xy, 0, 0));
+//     rng_state = new_seed_f32(vec4f(uf.time, uv.xy, 0));
+
+//     var color = vec3f(0);
+//     if uf.graphics_mode == 1 {
+//         for(var i: u32 = 0; i < uf.samples; i++) {
+//             color += trace_ray(
+//                 uf.camera_pos, 
+//                 normalize(uf.camera_mat * vec3f(uv + uf.pixel_size * vec2f(random_f32(), random_f32()), uf.camera_zoom))
+//             );
+//         }
+//         color = max(vec3f(0), min(vec3f(1), ton_mapping(color / f32(uf.samples))));
+//     } else if uf.graphics_mode == 2 {
+//         let ro = uf.camera_pos;
+//         let rd = normalize(uf.camera_mat * vec3f(uv + uf.pixel_size * vec2f(random_f32(), random_f32()), uf.camera_zoom));
+//         let hit = cast_ray(ro, rd); 
+//         let refl = reflect_ray(ro, rd, hit);
+//         // color = vec3f(1.) * (1. - min(1.0, max(0.0, hit.dist * (1. / 2.2) - 0.3)));
+//         color = refl.color * (1. - min(1.0, max(0.0, hit.dist * (1. / 4.))));
+//         // color = vec3f(1.) * min(1., pow(0.1 / (1 + hit.dist - 0.), 0.7));
+//         // color = refl.color * min(1., pow(0.1 / (1 + hit.dist - 0.5), 0.7));
+//     } else if uf.graphics_mode == 3 {
+//         let ro = uf.camera_pos;
+//         let rd = normalize(uf.camera_mat * vec3f(uv + uf.pixel_size * vec2f(random_f32(), random_f32()), uf.camera_zoom));
+//         cast_ray(ro, rd);
+
+//         const mm = 400.0;
+//         // let a = min(1.0, f32(poly_intersect_count) / mm + f32(box_intersect_count) / mm);
+//         // let a = min(1.0, f32(poly_intersect_count) / mm);
+//         let a = min(1.0, f32(box_intersect_count) / mm);
+//         // color = vec3f(a);
+//         color = thermal_palette(a);
+//     }
+
+//     textureStore(output_texture, vec2<i32>(global_id.xy), vec4f(color, 1.));
+// }
+
+
+// --- РЕЖИМ 1: Path Tracing ---
+@compute @workgroup_size(16, 16)
+fn main_mode1(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let dimensions = textureDimensions(output_texture);
+    if (global_id.x >= dimensions.x || global_id.y >= dimensions.y) { return; }
+    
     let uv = (vec2<f32>(global_id.xy) / vec2<f32>(dimensions) - 0.5) * uf.aspect;
-
-    // сид для рандома
-    // rng_state = new_seed_f32(vec4f(uv.xy, 0, 0));
     rng_state = new_seed_f32(vec4f(uf.time, uv.xy, 0));
-
+    
     var color = vec3f(0);
-    if uf.graphics_mode == 1 {
-        for(var i: u32 = 0; i < uf.samples; i++) {
-            color += trace_ray(
-                uf.camera_pos, 
-                normalize(uf.camera_mat * vec3f(uv + uf.pixel_size * vec2f(random_f32(), random_f32()), uf.camera_zoom))
-            );
-        }
-        color = max(vec3f(0), min(vec3f(1), ton_mapping(color / f32(uf.samples))));
-    } else if uf.graphics_mode == 2 {
-        let ro = uf.camera_pos;
-        let rd = normalize(uf.camera_mat * vec3f(uv + uf.pixel_size * vec2f(random_f32(), random_f32()), uf.camera_zoom));
-        let hit = cast_ray(ro, rd); 
-        let refl = reflect_ray(ro, rd, hit);
-        // color = vec3f(1.) * (1. - min(1.0, max(0.0, hit.dist * (1. / 2.2) - 0.3)));
-        color = refl.color * (1. - min(1.0, max(0.0, hit.dist * (1. / 4.))));
-        // color = vec3f(1.) * min(1., pow(0.1 / (1 + hit.dist - 0.), 0.7));
-        // color = refl.color * min(1., pow(0.1 / (1 + hit.dist - 0.5), 0.7));
-    } else if uf.graphics_mode == 3 {
-        let ro = uf.camera_pos;
-        let rd = normalize(uf.camera_mat * vec3f(uv + uf.pixel_size * vec2f(random_f32(), random_f32()), uf.camera_zoom));
-        cast_ray(ro, rd);
-
-        const mm = 400.0;
-        // let a = min(1.0, f32(poly_intersect_count) / mm + f32(box_intersect_count) / mm);
-        // let a = min(1.0, f32(poly_intersect_count) / mm);
-        let a = min(1.0, f32(box_intersect_count) / mm);
-        // color = vec3f(a);
-        color = thermal_palette(a);
+    for(var i: u32 = 0; i < uf.samples; i++) {
+        color += trace_ray(
+            uf.camera_pos,
+            normalize(uf.camera_mat * vec3f(uv + uf.pixel_size * vec2f(random_f32(), random_f32()), uf.camera_zoom))
+        );
     }
+    color = max(vec3f(0), min(vec3f(1), ton_mapping(color / f32(uf.samples))));
+    textureStore(output_texture, vec2<i32>(global_id.xy), vec4f(color, 1.));
+}
 
+// --- РЕЖИМ 2: Первый отскок + затухание ---
+@compute @workgroup_size(16, 16)
+fn main_mode2(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let dimensions = textureDimensions(output_texture);
+    if (global_id.x >= dimensions.x || global_id.y >= dimensions.y) { return; }
+    
+    let uv = (vec2<f32>(global_id.xy) / vec2<f32>(dimensions) - 0.5) * uf.aspect;
+    rng_state = new_seed_f32(vec4f(uf.time, uv.xy, 0));
+    
+    let ro = uf.camera_pos;
+    let rd = normalize(uf.camera_mat * vec3f(uv + uf.pixel_size * vec2f(random_f32(), random_f32()), uf.camera_zoom));
+    let hit = cast_ray(ro, rd);
+    let refl = reflect_ray(ro, rd, hit);
+    let color = refl.color * (1. - min(1.0, max(0.0, hit.dist * (1. / 4.))));
+    textureStore(output_texture, vec2<i32>(global_id.xy), vec4f(color, 1.));
+}
+
+// --- РЕЖИМ 3: Тепловая карта пересечений ---
+@compute @workgroup_size(16, 16)
+fn main_mode3(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let dimensions = textureDimensions(output_texture);
+    if (global_id.x >= dimensions.x || global_id.y >= dimensions.y) { return; }
+    
+    let uv = (vec2<f32>(global_id.xy) / vec2<f32>(dimensions) - 0.5) * uf.aspect;
+    rng_state = new_seed_f32(vec4f(uf.time, uv.xy, 0));
+    
+    let ro = uf.camera_pos;
+    let rd = normalize(uf.camera_mat * vec3f(uv + uf.pixel_size * vec2f(random_f32(), random_f32()), uf.camera_zoom));
+    cast_ray(ro, rd);
+    
+    const mm = 40.0;
+    // let a = min(1.0, f32(box_intersect_count) / mm);
+    let a = min(1.0, f32(poly_intersect_count) / mm);
+    // let a = min(1.0, f32(box_intersect_count * poly_intersect_count) / mm);
+    let color = thermal_palette(a);
     textureStore(output_texture, vec2<i32>(global_id.xy), vec4f(color, 1.));
 }

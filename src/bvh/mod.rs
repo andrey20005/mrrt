@@ -1,7 +1,11 @@
 use std::ops::Range;
 use glam::Vec3;
 use crate::polygon::Polygon;
-use crate::shaders::ray as ray_gpu; // Доступ к сгенерированной wgsl_to_wgpu структуре Box
+use crate::shaders::ray as ray_gpu;
+
+pub mod sah_split;
+pub mod binned_sah_split;
+pub mod median_split;
 
 /// Узел BVH-дерева на CPU с владеющими указателями Box
 pub struct BvhNode {
@@ -24,116 +28,94 @@ pub struct BvhStats {
     pub avg_depth: f32,
 }
 
+/// Трейт для стратегий разделения BVH
+pub trait Splitter: Sized + Send + Sync {
+    fn new(polygons: &mut [Polygon], bounds_min: Vec3, bounds_max: Vec3) -> Self;
+    /// Разделяет срез на две части. 
+    /// Возвращает индекс `mid`, так что [0..mid] идет в левое поддерево, а [mid..] в правое.
+    /// Срез мутируется (полигоны переставляются).
+    /// Возвращает дополнительные данные для обоих детей
+    fn split(&mut self, polygons: &mut [Polygon], bounds_min: Vec3, bounds_max: Vec3) -> (usize, Self, Self);
+}
+
+const RAYON_THRESHOLD: usize = 5_000;
+
 impl BvhNode {
     /// Создает узел-лист. Он просто рассчитывает общие границы для своего диапазона полигонов.
-    pub fn new_leaf(polygons: &[Polygon], polygon_range: Range<usize>) -> Self {
-        let mut min = polygons[polygon_range.start].min;
-        let mut max = polygons[polygon_range.start].max;
-
-        // Объединяем границы всех полигонов, входящих в этот диапазон
-        for poly in &polygons[polygon_range.start as usize..polygon_range.end as usize] {
+    pub fn new_leaf(slice: &[Polygon], polygon_range: Range<usize>) -> Self {
+        // Итерируемся по всему переданному локальному срезу, не используя polygon_range для доступа
+        let mut min = slice[0].min;
+        let mut max = slice[0].max;
+        for poly in slice.iter() {
             min = min.min(poly.min);
             max = max.max(poly.max);
         }
-
+        
         Self {
             min,
             max,
-            polygon_range,
+            polygon_range, // Сохраняем глобальные индексы для корректной работы to_gpu()
             is_leaf: true,
             first_child: None,
             second_child: None,
         }
     }
 
-    /// Рекурсивно строит BVH-дерево по медиане вдоль самой длинной оси контейнера
-    pub fn new_bvh(
+    /// Рекурсивно строит BVH-дерево по медиане вдоль самой длинной оси контейнера, с поддержкой многопоточности.
+    pub fn new_bvh<S: Splitter + Send + Sync>(
         polygons: &mut [Polygon],
-        polygon_range: Range<usize>,
         max_layers: usize,
         max_polygons: usize,
     ) -> Self {
-        let count = polygon_range.end - polygon_range.start;
-
-        // Базовый случай: если достигнут лимит слоев или полигонов мало, делаем лист
-        if max_layers == 0 || count <= max_polygons {
-            return Self::new_leaf(polygons, polygon_range);
-        }
-
-        // Считаем общие границы для текущего диапазона (они нужны для создания текущего узла)
-        let mut total_min = polygons[polygon_range.start].min;
-        let mut total_max = polygons[polygon_range.start].max;
-        for poly in &polygons[polygon_range.start..polygon_range.end] {
+        let mut total_min = polygons[0].min;
+        let mut total_max = polygons[0].max;
+        for poly in polygons.iter() {
             total_min = total_min.min(poly.min);
             total_max = total_max.max(poly.max);
         }
 
-        // Находим самую длинную ось нашей коробки (0 = X, 1 = Y, 2 = Z)
-        let size = total_max - total_min;
-        let mut axis = 0;
-        if size.y > size.x { axis = 1; }
-        if size.z > size[axis] { axis = 2; }
+        let root_splitter = S::new(polygons, total_min, total_max);
 
-        // Сортируем полигоны по центрам вдоль выбранной оси
-        let sub_slice = &mut polygons[polygon_range.start..polygon_range.end];
-        sub_slice.sort_by(|a, b| {
-            let center_a = (a.v1[axis] + a.v2[axis] + a.v3[axis]) / 3.0;
-            let center_b = (b.v1[axis] + b.v2[axis] + b.v3[axis]) / 3.0;
-            center_a.partial_cmp(&center_b).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        Self::build_recursive::<S>(polygons, 0, max_layers, max_polygons, root_splitter)
+    }
 
-        // Массив для накопления стоимостей каждого сплита. 
-        // Кандидатов на разрез всего (count - 1), так как пустые дочерние узлы создавать нельзя.
-        let mut all_costs = vec![0.0; count - 1];
+    /// Рекурсивное построение с поддержкой многопоточности.
+    fn build_recursive<S: Splitter + Send + Sync>(
+        slice: &mut [Polygon],
+        global_start: usize,
+        max_layers: usize,
+        max_polygons: usize,
+        mut splitter: S,
+    ) -> Self {
+        let count = slice.len();
+        let polygon_range = global_start..(global_start + count);
 
-        // Прямой проход: считаем площади левых коробок (от 0 до i включительно)
-        let mut left_min = sub_slice[0].min;
-        let mut left_max = sub_slice[0].max;
-        for i in 0..(count - 1) {
-            left_min = left_min.min(sub_slice[i].min);
-            left_max = left_max.max(sub_slice[i].max);
-            let left_count = (i + 1) as f32;
-            all_costs[i] += box_surface_area(left_min, left_max) * left_count;
+        if max_layers == 0 || count <= max_polygons {
+            return Self::new_leaf(slice, polygon_range);
         }
 
-        // Обратный проход: добавляем площади правых коробок (от i+1 до конца)
-        let mut right_min = sub_slice[count - 1].min;
-        let mut right_max = sub_slice[count - 1].max;
-        for i in (0..(count - 1)).rev() {
-            right_min = right_min.min(sub_slice[i + 1].min);
-            right_max = right_max.max(sub_slice[i + 1].max);
-            let right_count = (count - 1 - i) as f32;
-            all_costs[i] += box_surface_area(right_min, right_max) * right_count;
+        let mut total_min = slice[0].min;
+        let mut total_max = slice[0].max;
+        for poly in slice.iter() {
+            total_min = total_min.min(poly.min);
+            total_max = total_max.max(poly.max);
         }
 
-        // Ищем индекс с минимальной стоимостью
-        let mut min_cost = f32::INFINITY;
-        let mut local_mid = 0;
-        for i in 0..(count - 1) {
-            if all_costs[i] < min_cost {
-                min_cost = all_costs[i];
-                local_mid = i;
-            }
-        }
+        let (local_mid, left_splitter, right_splitter) = splitter.split(slice, total_min, total_max);
+        
+        let (left_slice, right_slice) = slice.split_at_mut(local_mid);
 
-        // Точка разделения: в левую часть уйдут элементы 0..=local_mid (всего local_mid + 1 штук)
-        let mid = polygon_range.start + local_mid + 1;
-        // let mid = (polygon_range.start + polygon_range.end) / 2;
-
-        // Эвристический критерий остановки (необязательно, но полезно):
-        // Если стоимость лучшего разделения выше, чем стоимость создания листа, делаем лист.
-        // Для этого нужно ввести веса Ctrav и Cisect, пока считаем грубо:
-        let leaf_cost = box_surface_area(total_min, total_max) * count as f32;
-        if min_cost >= leaf_cost {
-            return Self::new_leaf(polygons, polygon_range);
-        }
-
-        let left_range = polygon_range.start..mid;
-        let right_range = mid..polygon_range.end;
-
-        // Рекурсивно создаем детей
-        let first_child = Self::new_bvh(polygons, left_range, max_layers - 1, max_polygons);
-        let second_child = Self::new_bvh(polygons, right_range, max_layers - 1, max_polygons);
+        let (first_child, second_child) = if count > RAYON_THRESHOLD {
+            rayon::join(
+                || Self::build_recursive::<S>(left_slice, global_start, max_layers - 1, max_polygons, left_splitter),
+                || Self::build_recursive::<S>(right_slice, global_start + local_mid, max_layers - 1, max_polygons, right_splitter),
+            )
+        } else {
+            (
+                Self::build_recursive::<S>(left_slice, global_start, max_layers - 1, max_polygons, left_splitter),
+                Self::build_recursive::<S>(right_slice, global_start + local_mid, max_layers - 1, max_polygons, right_splitter),
+            )
+        };
 
         Self {
             min: total_min,
@@ -255,9 +237,4 @@ impl BvhNode {
             avg_depth,
         }
     }
-}
-
-fn box_surface_area(box_min: Vec3, box_max: Vec3) -> f32 {
-    let d = box_max - box_min; // Размеры коробки по осям X, Y, Z
-    return 2.0 * (d.x * d.y + d.y * d.z + d.z * d.x);
 }
