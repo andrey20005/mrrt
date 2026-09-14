@@ -3,75 +3,67 @@ use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use wgpu::util::DeviceExt;
 use winit::keyboard::{KeyCode, PhysicalKey};
-
 use crate::app_prelude::{AppLogic, AppState};
 use crate::camera::Camera;
 use crate::fps_counter::FrameTimeCounter;
 use crate::polygon::{Polygon, PolygonSliceExt};
 use crate::bvh::{self, BvhNode};
 use crate::obj_parser;
-use crate::shaders::ray;
+// Подключаем оба новых шейдера вместо старого ray
+use crate::shaders::{path_splitter, compositor}; 
 use crate::texture_mapping::{RenderTexture, TextureMapping};
 
 pub struct RayApp {
     // Наши вспомогательные инструменты
     render_texture: RenderTexture,
     texture_mapping: TextureMapping,
-
-    // Ресурсы для Compute-пасса
-    compute_pipeline: wgpu::ComputePipeline,
-    bind_group0: ray::bind_groups::BindGroup0,
-
-    // буфферы с данными
-    uniform_buffer:  wgpu::Buffer,
-    polygons_buffer: wgpu::Buffer,
-    bvh_buffer:      wgpu::Buffer,
-    camera:          Camera,
+    
+    // Два пайплайна для двух шейдеров
+    path_splitter_pipeline: wgpu::ComputePipeline,
+    compositor_pipeline: wgpu::ComputePipeline,
+    
+    // Две бинд-группы (используем правильные пути из wgsl_to_wgpu)
+    bind_group_pass1: path_splitter::bind_groups::BindGroup0,
+    bind_group_pass2: compositor::bind_groups::BindGroup0,
+    
+    // Буфферы с данными
+    uniform_buffer:   wgpu::Buffer,
+    polygons_buffer:  wgpu::Buffer,
+    bvh_buffer:       wgpu::Buffer,
+    path_data_buffer: wgpu::Buffer, // НОВЫЙ: буфер для передачи данных между шейдерами
+    
+    camera: Camera,
     
     // полезные данные
-    start_time:  std::time::Instant,
+    start_time:     std::time::Instant,
     aspect:         glam::Vec2,
     pixel_size:     f32,
     polygons_count: u32,
-
+    
     // для анализа частоты кадров
-    fps_counter:        crate::fps_counter::FrameTimeCounter,
+    fps_counter:        FrameTimeCounter,
     last_frame_instant: std::time::Instant,
     time_accumulator:   f32,
 }
 
 impl AppLogic for RayApp {
     fn new(state: &AppState) -> Self {
-        // --- ЗАГРУЗКА ВСЕХ МОДЕЛЕЙ ---
+        // --- ЗАГРУЗКА ВСЕХ МОДЕЛЕЙ (БЕЗ ИЗМЕНЕНИЙ) ---
         let mut scene_polygons = Vec::new();
-
-        // Конфигурация всей сцены в одном массиве
-        // Кортеж содержит: (Имя файла, Цвет, Тип материала, Вектор смещения, Матрица поворота)
         let models_config = [
-            // Системная коробка Корнелла (белая, красная, зеленая стены и лампа)
             ("cornell_box_walls_and_floor.obj",  Vec3::new(0.8, 0.8, 0.8),      -1.0, Vec3::ZERO, Mat3::IDENTITY),
             ("cornell_box_red_wall.obj",         Vec3::new(0.99, 0.05, 0.05),   -1.0, Vec3::ZERO, Mat3::IDENTITY),
             ("cornell_box_green_wall.obj",       Vec3::new(0.05, 0.99, 0.05),   -1.0, Vec3::ZERO, Mat3::IDENTITY),
             ("cornell_box_blue_wall.obj",        Vec3::new(0.05, 0.05, 0.99),   -1.0, Vec3::ZERO, Mat3::IDENTITY),
             ("cornell_box_lamp.obj",             Vec3::new(1.0, 1.0, 1.0) * 5., -2.0, Vec3::ZERO, Mat3::from_diagonal(Vec3::new(2., 1., 2.))),
-
-            // Пример: Сюзанна (зеркальная, сдвинута влево)
-            // ("suzanne.obj", Vec3::new(0.9, 0.9, 0.9), 1.0, Vec3::new(0.35, 0.001, 0.51), Mat3::IDENTITY),
             ("suzanne_low.obj", Vec3::new(0.9, 0.9, 0.9), 1.0, Vec3::new(0.35, 0.001, 0.51), Mat3::IDENTITY),
-            
-            // Пример: Дракон (полуматовый, развернут и сдвинут вправо)
-            // ("dragon.obj",  Vec3::new(0.8, 0.7, 0.4), 0.5, Vec3::new(-0.11, 0.001, -0.42), Mat3::from_rotation_y(-40.0_f32.to_radians())),
             ("dragon_low.obj",  Vec3::new(0.8, 0.7, 0.4), 0.5, Vec3::new(-0.11, 0.001, -0.42), Mat3::from_rotation_y(-40.0_f32.to_radians())),
-            
-            // Пример: Сфера (матовая, приподнята)
-            // ("sphere.obj",  Vec3::new(0.99, 0.87, 0.91), 0.0, Vec3::new(-0.43, 0.001, -0.04), Mat3::IDENTITY),
             ("sphere_low.obj", Vec3::new(0.9, 0.7, 0.8), 0.0, Vec3::new(-0.43, 0.001, -0.04), Mat3::IDENTITY),
         ];
-
+        
         for (file_name, color, mat_type, translation, rotation) in models_config {
             let path = format!("assets/models/{}", file_name);
             if let Ok(file_data) = std::fs::read_to_string(&path) {
-                // Парсер сразу возвращает чистый Range<usize>
                 if let Ok(r) = obj_parser::parse_obj_into_vector(&file_data, color, mat_type, &mut scene_polygons) {
                     if !r.is_empty() {
                         let model_slice = &mut scene_polygons[r];
@@ -82,66 +74,60 @@ impl AppLogic for RayApp {
                 } else { log::error!("Ошибка: Не удалось распарсить файл {}", file_name); }
             } else { log::warn!("Предупреждение: Не удалось прочитать файл {}", path); }
         }
-
-        // Страховочный треугольник, если папка assets пуста
+        
         if scene_polygons.is_empty() {
             scene_polygons.push(Polygon::new(
-                Vec3::new(-1.0, -1.0, -1.0),
-                Vec3::new( 1.0, -1.0, -1.0),
-                Vec3::new( 0.0,  1.0, -1.0),
-                Vec3::new(1.0, 0.5, 0.0),
-                1.0,
+                Vec3::new(-1.0, -1.0, -1.0), Vec3::new( 1.0, -1.0, -1.0),
+                Vec3::new( 0.0,  1.0, -1.0), Vec3::new(1.0, 0.5, 0.0), 1.0,
             ));
         }
-        let polygons_count = scene_polygons.len();
-
-        // Строим BVH дерево
-        let bvh_start_time = std::time::Instant::now();
-        // let bvh_tree = BvhNode::new_bvh::<bvh::median_split::MedianSplit>(&mut scene_polygons, 25, 4);
-        let bvh_tree = BvhNode::new_bvh::<bvh::binned_sah_split::BinnedSahSplit>(&mut scene_polygons, 25, 4);
-        // let bvh_tree = BvhNode::new_bvh::<bvh::sah_split::SahSplit>(&mut scene_polygons, 25, 4);
-
-        let bvh_duration = bvh_start_time.elapsed();
-        let bvh_stats = bvh_tree.collect_stats();
-        println!("==================================================");
-        println!(" СТАТИСТИКА ГЕОМЕТРИЧЕСКОГО ЯДРА ДВИЖКА ");
-        println!("==================================================");
-        println!("Успешно загружено полигонов: {}", polygons_count);
-        println!("Время построения BVH-дерева: {:?}", bvh_duration);
-        println!("--------------------------------------------------");
-        println!("Всего листьев в дереве:      {}", bvh_stats.total_leaves);
-        println!("Глубина дерева (слои):      Мин: {}, Макс: {}, Средняя: {:.2}", bvh_stats.min_depth, bvh_stats.max_depth, bvh_stats.avg_depth);
-        println!("Полигонов в одном листе:    Мин: {}, Макс: {}, Среднее: {:.2}", bvh_stats.min_poly_in_leaf, bvh_stats.max_poly_in_leaf, bvh_stats.avg_poly_in_leaf);
-        println!("==================================================");
-
-        // --- УПАКОВКА В СТРУКТУРЫ ENCASE ДЛЯ GPU ---
         
-        let gpu_polygons: Vec<ray::Polygon> = scene_polygons.iter().map(|p| p.to_gpu()).collect();
-        let gpu_bvh_nodes: Vec<ray::BvhNode> = bvh_tree.to_gpu();
+        let polygons_count = scene_polygons.len();
+        let bvh_tree = BvhNode::new_bvh::<bvh::binned_sah_split::BinnedSahSplit>(&mut scene_polygons, 25, 4);
 
+        // ==========================================
+        // ИСПРАВЛЕНИЕ 1: ПУТЬ А (Маппинг полей)
+        // ==========================================
+        // Конвертируем Полигоны из ray::Polygon в path_splitter::Polygon
+        let gpu_polygons: Vec<path_splitter::Polygon> = scene_polygons.iter().map(|p| {
+            let src = p.to_gpu(); // Возвращает твой старый ray::Polygon
+            path_splitter::Polygon {
+                global_to_local: src.global_to_local,
+                normal: src.normal,
+                origin: src.origin,
+                color: src.color,
+                t: src.t,
+            }
+        }).collect();
+
+        // Конвертируем BVH из ray::BvhNode в path_splitter::BvhNode
+        let gpu_bvh_nodes: Vec<path_splitter::BvhNode> = bvh_tree.to_gpu().into_iter().map(|src| {
+            path_splitter::BvhNode {
+                box_max: src.box_max,
+                sec_child_or_first_poly: src.sec_child_or_first_poly,
+                box_min: src.box_min,
+                poly_count: src.poly_count,
+            }
+        }).collect();
+
+        // --- УПАКОВКА В ENCASE (ИСПОЛЬЗУЕМ path_splitter ТИПЫ) ---
         let mut polygons_encase = encase::StorageBuffer::new(Vec::new());
         polygons_encase.write(&gpu_polygons).unwrap();
-        let polygons_bytes = polygons_encase.into_inner();
-
         let polygons_buffer = state.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Polygons Storage Buffer"),
-            contents: &polygons_bytes, // Передаем корректные encase-байты
+            contents: &polygons_encase.into_inner(),
             usage: wgpu::BufferUsages::STORAGE,
         });
-
-        // Используем encase::StorageBuffer для BVH нод
+        
         let mut bvh_encase = encase::StorageBuffer::new(Vec::new());
         bvh_encase.write(&gpu_bvh_nodes).unwrap();
-        let bvh_bytes = bvh_encase.into_inner();
-
         let bvh_buffer = state.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("BVH Storage Buffer"),
-            contents: &bvh_bytes, // Передаем корректные encase-байты
+            contents: &bvh_encase.into_inner(),
             usage: wgpu::BufferUsages::STORAGE,
         });
-
-        // Создаем Uniform-буфер
-        let uniform_size = <ray::Uniform as encase::ShaderType>::min_size();
+        
+        let uniform_size = <path_splitter::Uniform as encase::ShaderType>::min_size();
         let uniform_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Raytracing Uniform Buffer"),
             size: uniform_size.get(),
@@ -149,45 +135,80 @@ impl AppLogic for RayApp {
             mapped_at_creation: false,
         });
 
-        // --- СБОРКА ПАЙПЛАЙНА ---
-        let render_texture = RenderTexture::new(state, 0.9);
+        // --- СОЗДАНИЕ PATH DATA BUFFER ---
+        let render_texture = RenderTexture::new(state, 0.5);
+        let (v_width, v_height) = render_texture.virtual_size();
+        
+        let path_data_elem_size = <path_splitter::PathData as encase::ShaderType>::min_size();
+        let path_data_buffer_size = (v_width * v_height) as u64 * path_data_elem_size.get();
+        
+        let path_data_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Path Data Buffer"),
+            size: path_data_buffer_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        // --- СБОРКА ПАЙПЛАЙНОВ ---
         let texture_mapping = TextureMapping::new(state);
+        
+        let path_splitter_pipeline = state.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Path Splitter Pipeline"),
+            layout: Some(&path_splitter::create_pipeline_layout(&state.device)),
+            module: &path_splitter::create_shader_module(&state.device),
+            entry_point: Some(path_splitter::ENTRY_MAIN_PASS1),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        
+        let compositor_pipeline = state.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Compositor Pipeline"),
+            layout: Some(&compositor::create_pipeline_layout(&state.device)),
+            module: &compositor::create_shader_module(&state.device),
+            // entry_point: Some(compositor::ENTRY_MAIN_PASS2),
+            entry_point: Some(compositor::ENTRY_MAIN_DENOISE),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
 
-        let pipeline_layout = ray::create_pipeline_layout(&state.device);
-        let compute_module = ray::create_shader_module(&state.device);
-
-        let bindings = ray::bind_groups::BindGroupLayout0 {
+        // ==========================================
+        // ИСПРАВЛЕНИЕ 2: ПРАВИЛЬНЫЕ БИНД-ГРУППЫ И as_entire_buffer_binding
+        // ==========================================
+        // Pass 1
+        let bindings1 = path_splitter::bind_groups::BindGroupLayout0 {
             uf: uniform_buffer.as_entire_buffer_binding(),
             polygons: polygons_buffer.as_entire_buffer_binding(),
             bvh: bvh_buffer.as_entire_buffer_binding(),
             output_texture: render_texture.texture_view(),
+            path_data_buffer: path_data_buffer.as_entire_buffer_binding(), // ИСПРАВЛЕНО
         };
-        let bind_group0 = ray::bind_groups::BindGroup0::from_bindings(&state.device, bindings);
+        let bind_group_pass1 = path_splitter::bind_groups::BindGroup0::from_bindings(&state.device, bindings1);
 
-        let compute_pipeline = state.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Gradients Compute Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &compute_module,
-            entry_point: Some(ray::ENTRY_MAIN_MODE1),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
+        // Pass 2
+        let bindings2 = compositor::bind_groups::BindGroupLayout0 {
+            uf: uniform_buffer.as_entire_buffer_binding(),
+            path_data_buffer: path_data_buffer.as_entire_buffer_binding(), // ИСПРАВЛЕНО
+            output_texture: render_texture.texture_view(),
+        };
+        let bind_group_pass2 = compositor::bind_groups::BindGroup0::from_bindings(&state.device, bindings2);
 
         let w = state.size.width as f32;
         let h = state.size.height as f32;
         let aspect = Vec2::new(1.0f32.max(w / h), 1.0f32.max(h / w));
         let pixel_size = 2.0 / w.min(h);
-
         let camera = Camera::new(Vec3::new(-2.0, 0.9, 0.0), -6.0, 90.0, 1.5, false);
 
         Self {
             render_texture,
             texture_mapping,
-            compute_pipeline,
-            bind_group0,
+            path_splitter_pipeline,
+            compositor_pipeline,
+            bind_group_pass1,
+            bind_group_pass2,
             uniform_buffer,
             polygons_buffer,
             bvh_buffer,
+            path_data_buffer,
             camera,
             start_time: std::time::Instant::now(),
             aspect,
@@ -200,23 +221,40 @@ impl AppLogic for RayApp {
     }
 
     fn resize(&mut self, state: &AppState, new_size: PhysicalSize<u32>) {
-        // Пересчитываем размеры нашей текстуры рендера
         self.render_texture.resize(state, new_size.width, new_size.height);
-
         let w = state.size.width as f32;
         let h = state.size.height as f32;
         self.aspect = Vec2::new(1.0f32.max(w / h), 1.0f32.max(h / w));
         self.pixel_size = 2.0 / w.min(h);
 
-        // ВАЖНО: Так как текстура внутри render_texture пересоздалась, её старый TextureView
-        // стал невалидным. Нам нужно обновить бинд-группу вычислительного шейдера!
-        let bindings = ray::bind_groups::BindGroupLayout0 {
+        // ПРИ РЕСАЙЗЕ МЫ ОБЯЗАНЫ ПЕРЕСОЗДАТЬ path_data_buffer
+        let (v_width, v_height) = self.render_texture.virtual_size();
+        let path_data_elem_size = <path_splitter::PathData as encase::ShaderType>::min_size();
+        let new_size_bytes = (v_width * v_height) as u64 * path_data_elem_size.get();
+        
+        self.path_data_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Path Data Buffer"),
+            size: new_size_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        // Пересоздаем бинд-группы с новыми текстурами и новым буфером
+        let bindings1 = path_splitter::bind_groups::BindGroupLayout0 {
             uf: self.uniform_buffer.as_entire_buffer_binding(),
             polygons: self.polygons_buffer.as_entire_buffer_binding(),
             bvh: self.bvh_buffer.as_entire_buffer_binding(),
             output_texture: self.render_texture.texture_view(),
+            path_data_buffer: self.path_data_buffer.as_entire_buffer_binding(),
         };
-        self.bind_group0 = ray::bind_groups::BindGroup0::from_bindings(&state.device, bindings);
+        self.bind_group_pass1 = path_splitter::bind_groups::BindGroup0::from_bindings(&state.device, bindings1);
+
+        let bindings2 = compositor::bind_groups::BindGroupLayout0 {
+            uf: self.uniform_buffer.as_entire_buffer_binding(),
+            path_data_buffer: self.path_data_buffer.as_entire_buffer_binding(),
+            output_texture: self.render_texture.texture_view(),
+        };
+        self.bind_group_pass2 = compositor::bind_groups::BindGroup0::from_bindings(&state.device, bindings2);
     }
 
     fn handle_input(&mut self, state: &AppState, event: &WindowEvent) -> bool {
@@ -236,10 +274,9 @@ impl AppLogic for RayApp {
                             println!("🎬 Сглаживание:  Linear. Разрешение: {}x{}", vw, vh);
                             return true;
                         }
-                        // Изменение масштаба рендера для теста производительности (F3 - 50%, F4 - 100%)
                         PhysicalKey::Code(KeyCode::F3) => {
                             self.render_texture.set_scale(state, 0.5);
-                            self.resize(state, state.size); // Пересоздаем бинд-группы
+                            self.resize(state, state.size);
                             let (vw, vh) = self.render_texture.virtual_size();
                             println!("🚀 Масштаб рендера:  50%. Разрешение: {}x{}", vw, vh);
                             return true;
@@ -273,10 +310,8 @@ impl AppLogic for RayApp {
         let now = std::time::Instant::now();
         let delta_time = now.duration_since(self.last_frame_instant).as_secs_f32();
         self.last_frame_instant = now;
-
         self.camera.update_position(delta_time);
 
-        // Обновляем таймер вывода FPS
         self.time_accumulator += delta_time;
         if self.time_accumulator >= 1.0 {
             let avg_fps = self.fps_counter.get_avg_fps(2.0);
@@ -286,16 +321,14 @@ impl AppLogic for RayApp {
         }
 
         let elapsed = self.start_time.elapsed().as_secs_f32();
-
-        let uniform_data = ray::Uniform {
+        
+        // Uniform теперь берем из path_splitter
+        let uniform_data = path_splitter::Uniform {
             time: elapsed,
             aspect: self.aspect,
             camera_mat: self.camera.rotation_matrix(),
             camera_pos: self.camera.position(),
             camera_zoom: self.camera.zoom(),
-            // camera_mat: Mat3::from_rotation_y(90_f32.to_radians()) * Mat3::from_rotation_x(6_f32.to_radians()),
-            // camera_pos: Vec3::new(-5.0, 1.46, 0.0),
-            // camera_zoom: 4.,
             pixel_size: self.pixel_size,
             background_color: Vec3::splat(0.1),
             polygons_count: self.polygons_count,
@@ -307,36 +340,43 @@ impl AppLogic for RayApp {
         byte_buffer.write(&uniform_data).unwrap();
         state.queue.write_buffer(&self.uniform_buffer, 0, &byte_buffer.into_inner());
 
-        // --- ЗАПУСК ВЫЧИСЛИТЕЛЬНОГО ШЕЙДЕРА (COMPUTE PASS) ---
+        let (v_width, v_height) = self.render_texture.virtual_size();
+        let workgroup_x = (v_width + 15) / 16;
+        let workgroup_y = (v_height + 15) / 16;
+
+        // ==========================================
+        // ШАГ 1: PATH SPLITTER (Сбор данных)
+        // ==========================================
         {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Gradients Compute Pass"),
+            let mut cpass1 = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Pass 1: Path Splitter"),
                 timestamp_writes: None,
             });
-            cpass.set_pipeline(&self.compute_pipeline);
-            
-            // Применяем сгенерированную бинд-группу для вычислений
-            ray::set_bind_groups(&mut cpass, &self.bind_group0);
+            cpass1.set_pipeline(&self.path_splitter_pipeline);
+            path_splitter::set_bind_groups(&mut cpass1, &self.bind_group_pass1);
+            cpass1.dispatch_workgroups(workgroup_x, workgroup_y, 1);
+        } // <-- Завершение скобки создает неявный барьер синхронизации!
 
-            // Получаем виртуальный размер нашей текстуры рендера
-            let (v_width, v_height) = self.render_texture.virtual_size();
-            
-            // Считаем сетку рабочих групп (делим размер текстуры на размер группы 16х16 с округлением вверх)
-            let workgroup_x = (v_width + 15) / 16;
-            let workgroup_y = (v_height + 15) / 16;
-            
-            cpass.dispatch_workgroups(workgroup_x, workgroup_y, 1);
+        // ==========================================
+        // ШАГ 2: COMPOSITOR (Сборка изображения)
+        // ==========================================
+        {
+            let mut cpass2 = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Pass 2: Compositor"),
+                timestamp_writes: None,
+            });
+            cpass2.set_pipeline(&self.compositor_pipeline);
+            compositor::set_bind_groups(&mut cpass2, &self.bind_group_pass2);
+            cpass2.dispatch_workgroups(workgroup_x, workgroup_y, 1);
         }
 
         // --- ВЫВОД РЕЗУЛЬТАТА НА ЭКРАН (RENDER PASS) ---
-        // Передаем готовую бинд-группу фрагментного шейдера из текстуры в наш отрисовщик
         self.texture_mapping.render(
             self.render_texture.render_bind_group(),
             state,
             view,
             encoder,
         );
-
         self.fps_counter.tick();
     }
 }
