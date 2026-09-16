@@ -32,7 +32,7 @@ fn ton_mapping(x: vec3f) -> vec3f {
     return x * 1.2 / (x + vec3f(1.0));
 }
 
-// --- ШЕЙДЕР 2: КОМПОЗИТИНГ (БУДУЩИЙ ДЕНОЙЗЕР) ---
+// КОМПОЗИТИНГ 
 @compute @workgroup_size(16, 16)
 fn main_pass2(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let dimensions = textureDimensions(output_texture);
@@ -52,7 +52,7 @@ fn main_pass2(@builtin(global_invocation_id) global_id: vec3<u32>) {
     textureStore(output_texture, vec2<i32>(global_id.xy), vec4f(final_color, 1.));
 }
 
-// --- ШЕЙДЕР 2: КОМПОЗИТИНГ С ПРОСТЫМ ДЕНОЙЗЕРОМ (5x5) ---
+// КОМПОЗИТИНГ С  ДЕНОЙЗЕРОМ
 @compute @workgroup_size(16, 16)
 fn main_denoise(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let dimensions = textureDimensions(output_texture);
@@ -70,14 +70,43 @@ fn main_denoise(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    var accumulated_color = vec3f(0.0);
-    var total_weight = 0.0;
 
     let center_normal = normalize(center_data.hit_normal);
-    let center_dir = normalize(center_data.hit_dir); // Направление отскока в центре
 
-    let radius = 8; // Ядро 5x5: от -2 до +2
+    let up = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(center_normal.x) > 0.9);
+    let tangent = normalize(cross(up, center_normal));
+    let bitangent = cross(center_normal, tangent);
 
+    // const DIR_COUNT = 5;
+    // var bins_dir = array<vec3f, DIR_COUNT>(
+    //     center_normal,
+    //     normalize(center_normal + tangent * 0.7),
+    //     normalize(center_normal - tangent * 0.7),
+    //     normalize(center_normal + bitangent * 0.7),
+    //     normalize(center_normal - bitangent * 0.7)
+    // );
+    // // x,y,z = накопленный цвет * вес, w = сумма весов
+    // var bins = array<vec4f, DIR_COUNT>(vec4f(0), vec4f(0), vec4f(0), vec4f(0), vec4f(0));
+
+    const DIR_COUNT: i32 = 9;
+    // Математически точные коэффициенты для равного телесного угла
+    const k_inner: f32 = 0.515388; const k_outer: f32 = 1.425219;
+    var bins_dir = array<vec3f, DIR_COUNT>(
+        center_normal,                               
+        normalize(center_normal + tangent * k_inner), 
+        normalize(center_normal - tangent * k_inner), 
+        normalize(center_normal + bitangent * k_inner), 
+        normalize(center_normal - bitangent * k_inner), 
+        normalize(center_normal + (tangent + bitangent) * k_outer), 
+        normalize(center_normal + (-tangent + bitangent) * k_outer), 
+        normalize(center_normal + (tangent - bitangent) * k_outer), 
+        normalize(center_normal + (-tangent - bitangent) * k_outer) 
+    );
+    // x,y,z = накопленный цвет * вес, w = сумма весов
+    var bins = array<vec4f, DIR_COUNT>(vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0));
+
+
+    let radius = 5;
     for (var dy = -radius; dy <= radius; dy = dy + 1) {
         for (var dx = -radius; dx <= radius; dx = dx + 1) {
             let nx = i32(global_id.x) + dx;
@@ -91,38 +120,37 @@ fn main_denoise(@builtin(global_invocation_id) global_id: vec3<u32>) {
             let n_idx = u32(ny) * dimensions.x + u32(nx);
             let neighbor_data = path_data_buffer[n_idx];
 
-            // 1. Пространственный вес (Гауссиан). Центр важнее краев.
+            var max_dot = dot(neighbor_data.hit_dir, bins_dir[0]);
+            if (max_dot < 0.) { continue; }
+            var bin_idx = 0;
+            for (var i = 1; i < DIR_COUNT; i++) {
+                let d = dot(neighbor_data.hit_dir, bins_dir[i]);
+                if (d > max_dot) {
+                    max_dot = d;
+                    bin_idx = i;
+                }
+            }
+
+            // Добавляем учет расстояния (Гауссово ядро)
             let dist_sq = f32(dx * dx + dy * dy);
-            let w_spatial = exp(-dist_sq * 0.); // 2.5 - параметр "ширины" размытия
+            let w_spatial = exp(-dist_sq / 20.0);
 
-            // 2. Вес по нормалям. Предотвращает растекание цвета через границы объектов.
-            let neighbor_normal = normalize(neighbor_data.hit_normal);
-            let normal_dot = max(0.0, dot(center_normal, neighbor_normal));
-            // Возводим в степень, чтобы резко обрывать вес на границах (16 или 32 дают хороший результат)
-            let w_normal = pow(normal_dot, 16.0);
-
-            // 3. Вес по направлению отскока (как ты и просил).
-            // Если направление луча у соседа сильно отличается от центрального, снижаем вес.
-            let neighbor_dir = normalize(neighbor_data.hit_dir);
-            let dir_dot = max(0.0, dot(center_dir, neighbor_dir));
-            let w_dir = pow(dir_dot, 8.0); // Степень чуть ниже, чтобы не было слишком жестких артефактов
-
-            // Итоговый вес пикселя
-            let weight = w_spatial * w_normal * w_dir;
-
-            // Накапливаем взвешенный цвет (произведение цвета и отраженного света)
-            let neighbor_radiance = neighbor_data.color * neighbor_data.reflected_light;
-            accumulated_color += neighbor_radiance * weight;
-            total_weight += weight;
+            bins[bin_idx] += vec4f(neighbor_data.reflected_light, 1.) * w_spatial;
         }
     }
 
     // Избегаем деления на ноль, если все веса оказались нулевыми
-    let final_weight = max(total_weight, 0.001);
-    var final_color = accumulated_color / final_weight;
+    // let final_weight = max(total_weight, 0.001);
+    // var final_color = accumulated_color / final_weight;
+    var final_color = vec3f(0);
+    for (var i = 0; i < 5; i++) {
+        if (bins[i].w <= 0.001) { continue; }
+        final_color += bins[i].rgb / bins[i].w * dot(center_normal, bins_dir[i]); 
+    }
 
     // Применяем tonemapping и ограничиваем диапазон [0, 1]
-    final_color = ton_mapping(final_color);
+    final_color = ton_mapping(final_color * (1 / f32(DIR_COUNT)) * center_data.color);
+    // final_color = ton_mapping(final_color * (1 / f32(DIR_COUNT)));
     final_color = max(vec3f(0.0), min(vec3f(1.0), final_color));
 
     textureStore(output_texture, vec2<i32>(global_id.xy), vec4f(final_color, 1.0));

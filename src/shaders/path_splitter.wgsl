@@ -369,7 +369,7 @@ fn main_pass1(@builtin(global_invocation_id) global_id: vec3<u32>) {
     if (global_id.x >= dimensions.x || global_id.y >= dimensions.y) { return; }
     
     let uv = (vec2<f32>(global_id.xy) / vec2<f32>(dimensions) - 0.5) * uf.aspect;
-    rng_state = new_seed_f32(vec4f(uf.time, uv.xy, 0));
+    rng_state = new_seed_f32(vec4f(uf.time * 0.9, uv.xy, 0));
 
     let ro = uf.camera_pos;
     let rd = normalize(uf.camera_mat * vec3f(uv + uf.pixel_size * vec2f(random_f32(), random_f32()), uf.camera_zoom));

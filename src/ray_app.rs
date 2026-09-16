@@ -57,7 +57,7 @@ impl AppLogic for RayApp {
             ("cornell_box_blue_wall.obj",        Vec3::new(0.05, 0.05, 0.99),   -1.0, Vec3::ZERO, Mat3::IDENTITY),
             ("cornell_box_lamp.obj",             Vec3::new(1.0, 1.0, 1.0) * 5., -2.0, Vec3::ZERO, Mat3::from_diagonal(Vec3::new(2., 1., 2.))),
             ("suzanne_low.obj", Vec3::new(0.9, 0.9, 0.9), 1.0, Vec3::new(0.35, 0.001, 0.51), Mat3::IDENTITY),
-            ("dragon_low.obj",  Vec3::new(0.8, 0.7, 0.4), 0.5, Vec3::new(-0.11, 0.001, -0.42), Mat3::from_rotation_y(-40.0_f32.to_radians())),
+            ("dragon_low.obj",  Vec3::new(0.8, 0.7, 0.4), 1.0, Vec3::new(-0.11, 0.001, -0.42), Mat3::from_rotation_y(-40.0_f32.to_radians())),
             ("sphere_low.obj", Vec3::new(0.9, 0.7, 0.8), 0.0, Vec3::new(-0.43, 0.001, -0.04), Mat3::IDENTITY),
         ];
         
