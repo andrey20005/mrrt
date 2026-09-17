@@ -11,9 +11,10 @@ log = "0.4"
 wgpu = "30.0"
 pollster = "1.0"
 glam = { version = "0.33", features = ["encase", "bytemuck"] }
-encase = "0.12"
+encase = { version = "0.12" }
 bytemuck = { version = "1.16", features = ["derive"] }
 rayon = "1.12"
+half = { version = "2.4", features = ["bytemuck"] }
 
 [build-dependencies]
 wgsl_to_wgpu = "0.19"

@@ -86,7 +86,11 @@ impl<T: AppLogic> ApplicationHandler for App<T> {
                 .await
                 .unwrap();
             let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor::default())
+                .request_device(&wgpu::DeviceDescriptor {
+                    label: None,
+                    required_features: wgpu::Features::SHADER_F16, 
+                    ..Default::default()
+                })
                 .await
                 .unwrap();
             (adapter, device, queue)

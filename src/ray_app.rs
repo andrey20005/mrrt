@@ -30,7 +30,8 @@ pub struct RayApp {
     uniform_buffer:   wgpu::Buffer,
     polygons_buffer:  wgpu::Buffer,
     bvh_buffer:       wgpu::Buffer,
-    path_data_buffer: wgpu::Buffer, // НОВЫЙ: буфер для передачи данных между шейдерами
+    compact_buffer:   wgpu::Buffer,
+    center_buffer:    wgpu::Buffer,
     
     camera: Camera,
     
@@ -85,9 +86,6 @@ impl AppLogic for RayApp {
         let polygons_count = scene_polygons.len();
         let bvh_tree = BvhNode::new_bvh::<bvh::binned_sah_split::BinnedSahSplit>(&mut scene_polygons, 25, 4);
 
-        // ==========================================
-        // ИСПРАВЛЕНИЕ 1: ПУТЬ А (Маппинг полей)
-        // ==========================================
         // Конвертируем Полигоны из ray::Polygon в path_splitter::Polygon
         let gpu_polygons: Vec<path_splitter::Polygon> = scene_polygons.iter().map(|p| {
             let src = p.to_gpu(); // Возвращает твой старый ray::Polygon
@@ -138,16 +136,22 @@ impl AppLogic for RayApp {
         // --- СОЗДАНИЕ PATH DATA BUFFER ---
         let render_texture = RenderTexture::new(state, 0.5);
         let (v_width, v_height) = render_texture.virtual_size();
+        let pixel_count = (v_width * v_height) as u64;
         
-        let path_data_elem_size = <path_splitter::PathData as encase::ShaderType>::min_size();
-        let path_data_buffer_size = (v_width * v_height) as u64 * path_data_elem_size.get();
-        
-        let path_data_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Path Data Buffer"),
-            size: path_data_buffer_size,
+        let compact_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Compact Buffer"),
+            size: pixel_count * 16,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
+
+        let center_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Center Buffer"),
+            size: pixel_count * 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
 
         // --- СБОРКА ПАЙПЛАЙНОВ ---
         let texture_mapping = TextureMapping::new(state);
@@ -171,23 +175,20 @@ impl AppLogic for RayApp {
             cache: None,
         });
 
-        // ==========================================
-        // ИСПРАВЛЕНИЕ 2: ПРАВИЛЬНЫЕ БИНД-ГРУППЫ И as_entire_buffer_binding
-        // ==========================================
-        // Pass 1
         let bindings1 = path_splitter::bind_groups::BindGroupLayout0 {
             uf: uniform_buffer.as_entire_buffer_binding(),
             polygons: polygons_buffer.as_entire_buffer_binding(),
             bvh: bvh_buffer.as_entire_buffer_binding(),
             output_texture: render_texture.texture_view(),
-            path_data_buffer: path_data_buffer.as_entire_buffer_binding(), // ИСПРАВЛЕНО
+            compact_buffer: compact_buffer.as_entire_buffer_binding(),
+            center_buffer: center_buffer.as_entire_buffer_binding(),
         };
         let bind_group_pass1 = path_splitter::bind_groups::BindGroup0::from_bindings(&state.device, bindings1);
 
-        // Pass 2
         let bindings2 = compositor::bind_groups::BindGroupLayout0 {
             uf: uniform_buffer.as_entire_buffer_binding(),
-            path_data_buffer: path_data_buffer.as_entire_buffer_binding(), // ИСПРАВЛЕНО
+            compact_buffer: compact_buffer.as_entire_buffer_binding(),
+            center_buffer: center_buffer.as_entire_buffer_binding(),
             output_texture: render_texture.texture_view(),
         };
         let bind_group_pass2 = compositor::bind_groups::BindGroup0::from_bindings(&state.device, bindings2);
@@ -208,7 +209,8 @@ impl AppLogic for RayApp {
             uniform_buffer,
             polygons_buffer,
             bvh_buffer,
-            path_data_buffer,
+            center_buffer,
+            compact_buffer,
             camera,
             start_time: std::time::Instant::now(),
             aspect,
@@ -227,31 +229,37 @@ impl AppLogic for RayApp {
         self.aspect = Vec2::new(1.0f32.max(w / h), 1.0f32.max(h / w));
         self.pixel_size = 2.0 / w.min(h);
 
-        // ПРИ РЕСАЙЗЕ МЫ ОБЯЗАНЫ ПЕРЕСОЗДАТЬ path_data_buffer
         let (v_width, v_height) = self.render_texture.virtual_size();
-        let path_data_elem_size = <path_splitter::PathData as encase::ShaderType>::min_size();
-        let new_size_bytes = (v_width * v_height) as u64 * path_data_elem_size.get();
-        
-        self.path_data_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Path Data Buffer"),
-            size: new_size_bytes,
+        let pixel_count = (v_width * v_height) as u64;
+
+        self.compact_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Compact Buffer"),
+            size: pixel_count * 16,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
-        // Пересоздаем бинд-группы с новыми текстурами и новым буфером
+        self.center_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Center Buffer"),
+            size: pixel_count * 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
         let bindings1 = path_splitter::bind_groups::BindGroupLayout0 {
             uf: self.uniform_buffer.as_entire_buffer_binding(),
             polygons: self.polygons_buffer.as_entire_buffer_binding(),
             bvh: self.bvh_buffer.as_entire_buffer_binding(),
             output_texture: self.render_texture.texture_view(),
-            path_data_buffer: self.path_data_buffer.as_entire_buffer_binding(),
+            compact_buffer: self.compact_buffer.as_entire_buffer_binding(),
+            center_buffer: self.center_buffer.as_entire_buffer_binding(),
         };
         self.bind_group_pass1 = path_splitter::bind_groups::BindGroup0::from_bindings(&state.device, bindings1);
 
         let bindings2 = compositor::bind_groups::BindGroupLayout0 {
             uf: self.uniform_buffer.as_entire_buffer_binding(),
-            path_data_buffer: self.path_data_buffer.as_entire_buffer_binding(),
+            compact_buffer: self.compact_buffer.as_entire_buffer_binding(),
+            center_buffer: self.center_buffer.as_entire_buffer_binding(),
             output_texture: self.render_texture.texture_view(),
         };
         self.bind_group_pass2 = compositor::bind_groups::BindGroup0::from_bindings(&state.device, bindings2);

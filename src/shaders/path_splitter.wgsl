@@ -1,3 +1,5 @@
+enable f16;
+
 struct Uniform {
     // секунд с начала работы программы
     time: f32,
@@ -50,20 +52,17 @@ struct BvhNode {
 }
 @binding(2) @group(0) var<storage, read> bvh: array<BvhNode>;
 
-// Буфер для передачи данных между шейдерами (G-Buffer / Path Data)
-struct PathData {
-    color: vec3f,           // Произведение альбедо до первой шумящей + альбедо первой шумящей
-    has_noisy: f32,         // 1.0 если была шумящая, -1.0 если нет
-    reflected_light: vec3f, // Произведение альбедо после первой шумящей + эмиссия
-    hit_mat_type: f32,      // Тип материала первой шумящей поверхности (t)
-    hit_pos: vec3f,         // Мировые координаты попадания в первую шумящую
-    _pad0: f32,
-    hit_normal: vec3f,      // Нормаль в точке попадания
-    _pad1: f32,
-    hit_dir: vec3f,         // Новое направление луча после отражения
-    _pad2: f32,
+struct NeighborDataCompact {
+    light_and_noisy: vec4<f16>, // x: reflected_light.r, y: reflected_light.g, z: reflected_light.b, w: has_noisy
+    dir_and_length: vec4<f16>,  // x: hit_dir.x, y: hit_dir.y, z: hit_dir.z, w: path_length
 }
-@binding(4) @group(0) var<storage, read_write> path_data_buffer: array<PathData>;
+@binding(4) @group(0) var<storage, read_write> compact_buffer: array<NeighborDataCompact>;
+
+struct CenterData {
+    normal_and_mat: vec4<f16>,  // x: hit_normal.x, y: hit_normal.y, z: hit_normal.z, w: hit_mat_type
+    color_and_pad: vec4<f16>,   // x: color.r, y: color.g, z: color.b, w: 0.0 (паддинг для кратности)
+}
+@binding(5) @group(0) var<storage, read_write> center_buffer: array<CenterData>;
 
 // Выходная текстура нужна только для получения dimensions
 @binding(3) @group(0) var output_texture: texture_storage_2d<rgba8unorm, write>;
@@ -279,16 +278,26 @@ fn reflect_ray(ro: vec3f, rd: vec3f, rayHit: RayHit) -> RayReflection {
     return RayReflection(hit_color, terminal, newRo, newRd);
 }
 
+struct TraceData {
+    color: vec3f,
+    has_noisy: f32,
+    reflected_light: vec3f,
+    hit_mat_type: f32,
+    hit_normal: vec3f,
+    hit_dir: vec3f,
+    path_length: f32,
+}
+
 // --- НОВАЯ ФУНКЦИЯ ТРАССИРОВКИ С РАЗДЕЛЕНИЕМ ПУТИ ---
-fn trace_ray_split(ro_in: vec3f, rd_in: vec3f) -> PathData {
-    var data: PathData;
+fn trace_ray_split(ro_in: vec3f, rd_in: vec3f) -> TraceData {
+    var data: TraceData;
     data.color = vec3f(0.0);
     data.reflected_light = vec3f(1.0);
     data.has_noisy = -1.0;
     data.hit_mat_type = 0.0;
-    data.hit_pos = vec3f(0.0);
     data.hit_normal = vec3f(0.0);
     data.hit_dir = vec3f(0.0);
+    data.path_length = 0.0;
 
     var throughput = vec3f(1.0);
     var ro = ro_in;
@@ -298,6 +307,7 @@ fn trace_ray_split(ro_in: vec3f, rd_in: vec3f) -> PathData {
 
     for (var i = uf.bounces; i > 0; i--) {
         let hit = cast_ray(ro, rd);
+        data.path_length += hit.dist;
         let refl = reflect_ray(ro, rd, hit);
 
         if (!found_noisy) {
@@ -319,7 +329,6 @@ fn trace_ray_split(ro_in: vec3f, rd_in: vec3f) -> PathData {
                 data.color = throughput * refl.color;
                 
                 let poly = polygons[hit_poly_idx];
-                data.hit_pos = ro + rd * hit.dist;
                 data.hit_normal = poly.normal;
                 if (dot(rd, poly.normal) > 0.0) { data.hit_normal = -poly.normal; }
                 data.hit_dir = refl.newRd;
@@ -369,13 +378,22 @@ fn main_pass1(@builtin(global_invocation_id) global_id: vec3<u32>) {
     if (global_id.x >= dimensions.x || global_id.y >= dimensions.y) { return; }
     
     let uv = (vec2<f32>(global_id.xy) / vec2<f32>(dimensions) - 0.5) * uf.aspect;
-    rng_state = new_seed_f32(vec4f(uf.time * 0.9, uv.xy, 0));
+    // rng_state = new_seed_f32(vec4f(uf.time * 0.9, global_id.x % 2, uv.y % 1, 0));
+    rng_state = new_seed(vec4u(u32(uf.time * 0), global_id.x, global_id.y, 0));
 
     let ro = uf.camera_pos;
     let rd = normalize(uf.camera_mat * vec3f(uv + uf.pixel_size * vec2f(random_f32(), random_f32()), uf.camera_zoom));
 
     let data = trace_ray_split(ro, rd);
-    
     let idx = global_id.y * dimensions.x + global_id.x;
-    path_data_buffer[idx] = data;
+    
+    compact_buffer[idx] = NeighborDataCompact(
+        vec4<f16>(f16(data.reflected_light.r), f16(data.reflected_light.g), f16(data.reflected_light.b), f16(data.has_noisy)),
+        vec4<f16>(f16(data.hit_dir.x), f16(data.hit_dir.y), f16(data.hit_dir.z), f16(data.path_length))
+    );
+
+    center_buffer[idx] = CenterData(
+        vec4<f16>(f16(data.hit_normal.x), f16(data.hit_normal.y), f16(data.hit_normal.z), f16(data.hit_mat_type)),
+        vec4<f16>(f16(data.color.r), f16(data.color.g), f16(data.color.b), f16(0.0))
+    );
 }

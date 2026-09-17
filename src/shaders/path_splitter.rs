@@ -7,7 +7,8 @@ pub mod bind_groups {
         pub uf: wgpu::BufferBinding<'a>,
         pub polygons: wgpu::BufferBinding<'a>,
         pub bvh: wgpu::BufferBinding<'a>,
-        pub path_data_buffer: wgpu::BufferBinding<'a>,
+        pub compact_buffer: wgpu::BufferBinding<'a>,
+        pub center_buffer: wgpu::BufferBinding<'a>,
         pub output_texture: &'a wgpu::TextureView,
     }
     const LAYOUT_DESCRIPTOR0: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
@@ -54,6 +55,16 @@ pub mod bind_groups {
                 count: None,
             },
             wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
                 binding: 3,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::StorageTexture {
@@ -88,7 +99,11 @@ pub mod bind_groups {
                     },
                     wgpu::BindGroupEntry {
                         binding: 4,
-                        resource: wgpu::BindingResource::Buffer(bindings.path_data_buffer),
+                        resource: wgpu::BindingResource::Buffer(bindings.compact_buffer),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Buffer(bindings.center_buffer),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
@@ -159,20 +174,18 @@ pub struct BvhNode {
     pub box_min: glam::Vec3,
     pub poly_count: i32,
 }
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct CenterData {
+    pub normal_and_mat: [half::f16; 4],
+    pub color_and_pad: [half::f16; 4],
+}
 pub const ENTRY_MAIN_PASS1: &str = "main_pass1";
 #[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, encase :: ShaderType)]
-pub struct PathData {
-    pub color: glam::Vec3,
-    pub has_noisy: f32,
-    pub reflected_light: glam::Vec3,
-    pub hit_mat_type: f32,
-    pub hit_pos: glam::Vec3,
-    pub _pad0: f32,
-    pub hit_normal: glam::Vec3,
-    pub _pad1: f32,
-    pub hit_dir: glam::Vec3,
-    pub _pad2: f32,
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct NeighborDataCompact {
+    pub light_and_noisy: [half::f16; 4],
+    pub dir_and_length: [half::f16; 4],
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, encase :: ShaderType)]

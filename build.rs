@@ -41,7 +41,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Сохраняем рядом с оригиналом, без всяких суффиксов (например: src/shaders/cube.rs)
             let out_path = path.with_extension("rs");
-            fs::write(out_path, text.as_bytes())?;
+            fs::write(&out_path, text.as_bytes())?;
+
+            if file_name == "path_splitter" || file_name == "compositor" {
+                let mut content = fs::read_to_string(&out_path)?;
+                
+                // Вариант с пробелом (именно он вызывал ошибку в твоем логе)
+                content = content.replace(
+                    "#[derive(Debug, Copy, Clone, PartialEq, encase :: ShaderType)]\npub struct NeighborDataCompact",
+                    "#[derive(Debug, Copy, Clone, PartialEq)]\npub struct NeighborDataCompact"
+                );
+                content = content.replace(
+                    "#[derive(Debug, Copy, Clone, PartialEq, encase :: ShaderType)]\npub struct CenterData",
+                    "#[derive(Debug, Copy, Clone, PartialEq)]\npub struct CenterData"
+                );
+                
+                // Вариант без пробела (на всякий случай, для надежности)
+                content = content.replace(
+                    "#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]\npub struct NeighborDataCompact",
+                    "#[derive(Debug, Copy, Clone, PartialEq)]\npub struct NeighborDataCompact"
+                );
+                content = content.replace(
+                    "#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]\npub struct CenterData",
+                    "#[derive(Debug, Copy, Clone, PartialEq)]\npub struct CenterData"
+                );
+
+                // Перезаписываем файл с исправлениями
+                fs::write(&out_path, content)?;
+            }
         }
     }
 
