@@ -101,6 +101,7 @@ fn main_denoise(@builtin(global_invocation_id) global_id: vec3<u32>) {
         f32(center_data.normal_and_mat.y),
         f32(center_data.normal_and_mat.z)
     ));
+    let center_path_length = f32(center_compact.dir_and_length.w);
 
     let up = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(center_normal.x) > 0.9);
     let tangent = normalize(cross(up, center_normal));
@@ -118,7 +119,6 @@ fn main_denoise(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // var bins = array<vec4f, DIR_COUNT>(vec4f(0), vec4f(0), vec4f(0), vec4f(0), vec4f(0));
 
     const DIR_COUNT: i32 = 9;
-    // Математически точные коэффициенты для равного телесного угла
     const k_inner: f32 = 0.515388; const k_outer: f32 = 1.425219;
     var bins_dir = array<vec3f, DIR_COUNT>(
         center_normal,                               
@@ -134,7 +134,8 @@ fn main_denoise(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // x,y,z = накопленный цвет * вес, w = сумма весов
     var bins = array<vec4f, DIR_COUNT>(vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0));
 
-    let radius = 5;
+    const radius = 5;
+    const radius_div = 1 / f32(radius * 4);
     for (var dy = -radius; dy <= radius; dy = dy + 1) {
         for (var dx = -radius; dx <= radius; dx = dx + 1) {
             let nx = i32(global_id.x) + dx;
@@ -147,6 +148,7 @@ fn main_denoise(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
             let n_idx = u32(ny) * dimensions.x + u32(nx);
             let neighbor_compact = compact_buffer[n_idx];
+            let neighbor_path_length = f32(neighbor_compact.dir_and_length.w);
 
             let neighbor_dir = normalize(vec3f(
                 f32(neighbor_compact.dir_and_length.x),
@@ -170,9 +172,13 @@ fn main_denoise(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 }
             }
 
-            // Добавляем учет расстояния (Гауссово ядро)
+            let diff = neighbor_path_length / center_path_length - 1;
+
             let dist_sq = f32(dx * dx + dy * dy);
-            let w_spatial = exp(-dist_sq * 0.01);
+            // let w_spatial = 1.;
+            // let w_spatial = exp(-dist_sq * radius_div);
+            // let w_spatial = max(0, 1 - diff * diff * 10000);
+            let w_spatial = exp(-dist_sq * radius_div) * max(0, 1 - diff * diff * 100);
 
             bins[bin_idx] += vec4f(neighbor_reflected, 1.0) * w_spatial;
         }

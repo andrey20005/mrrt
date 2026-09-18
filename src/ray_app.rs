@@ -57,9 +57,12 @@ impl AppLogic for RayApp {
             ("cornell_box_green_wall.obj",       Vec3::new(0.05, 0.99, 0.05),   -1.0, Vec3::ZERO, Mat3::IDENTITY),
             ("cornell_box_blue_wall.obj",        Vec3::new(0.05, 0.05, 0.99),   -1.0, Vec3::ZERO, Mat3::IDENTITY),
             ("cornell_box_lamp.obj",             Vec3::new(1.0, 1.0, 1.0) * 5., -2.0, Vec3::ZERO, Mat3::from_diagonal(Vec3::new(2., 1., 2.))),
-            ("suzanne_low.obj", Vec3::new(0.9, 0.9, 0.9), 1.0, Vec3::new(0.35, 0.001, 0.51), Mat3::IDENTITY),
-            ("dragon_low.obj",  Vec3::new(0.8, 0.7, 0.4), 1.0, Vec3::new(-0.11, 0.001, -0.42), Mat3::from_rotation_y(-40.0_f32.to_radians())),
-            ("sphere_low.obj", Vec3::new(0.9, 0.7, 0.8), 0.0, Vec3::new(-0.43, 0.001, -0.04), Mat3::IDENTITY),
+            ("suzanne.obj", Vec3::new(0.9, 0.9, 0.9), 1.0, Vec3::new(0.35, 0.001, 0.51), Mat3::IDENTITY),
+            // ("suzanne_low.obj", Vec3::new(0.9, 0.9, 0.9), 1.0, Vec3::new(0.35, 0.001, 0.51), Mat3::IDENTITY),
+            ("dragon.obj",  Vec3::new(0.8, 0.7, 0.4), 1.0, Vec3::new(-0.11, 0.001, -0.42), Mat3::from_rotation_y(-40.0_f32.to_radians())),
+            // ("dragon_low.obj",  Vec3::new(0.8, 0.7, 0.4), 1.0, Vec3::new(-0.11, 0.001, -0.42), Mat3::from_rotation_y(-40.0_f32.to_radians())),
+            ("sphere.obj", Vec3::new(0.9, 0.7, 0.8), 0.0, Vec3::new(-0.43, 0.001, -0.04), Mat3::IDENTITY),
+            // ("sphere_low.obj", Vec3::new(0.9, 0.7, 0.8), 0.0, Vec3::new(-0.43, 0.001, -0.04), Mat3::IDENTITY),
         ];
         
         for (file_name, color, mat_type, translation, rotation) in models_config {
@@ -84,7 +87,20 @@ impl AppLogic for RayApp {
         }
         
         let polygons_count = scene_polygons.len();
+        let bvh_start_time = std::time::Instant::now();
         let bvh_tree = BvhNode::new_bvh::<bvh::binned_sah_split::BinnedSahSplit>(&mut scene_polygons, 25, 4);
+        let bvh_duration = bvh_start_time.elapsed();
+        let bvh_stats = bvh_tree.collect_stats();
+        println!("==================================================");
+        println!(" СТАТИСТИКА ГЕОМЕТРИЧЕСКОГО ЯДРА ДВИЖКА ");
+        println!("==================================================");
+        println!("Успешно загружено полигонов: {}", polygons_count);
+        println!("Время построения BVH-дерева: {:?}", bvh_duration);
+        println!("--------------------------------------------------");
+        println!("Всего листьев в дереве:      {}", bvh_stats.total_leaves);
+        println!("Глубина дерева (слои):      Мин: {}, Макс: {}, Средняя: {:.2}", bvh_stats.min_depth, bvh_stats.max_depth, bvh_stats.avg_depth);
+        println!("Полигонов в одном листе:    Мин: {}, Макс: {}, Среднее: {:.2}", bvh_stats.min_poly_in_leaf, bvh_stats.max_poly_in_leaf, bvh_stats.avg_poly_in_leaf);
+        println!("==================================================");
 
         // Конвертируем Полигоны из ray::Polygon в path_splitter::Polygon
         let gpu_polygons: Vec<path_splitter::Polygon> = scene_polygons.iter().map(|p| {
@@ -140,14 +156,14 @@ impl AppLogic for RayApp {
         
         let compact_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Compact Buffer"),
-            size: pixel_count * 16,
+            size: pixel_count * 16, // 16 это размер структуры
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
         let center_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Center Buffer"),
-            size: pixel_count * 16,
+            size: pixel_count * 16, // 16 это размер структуры
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -169,8 +185,8 @@ impl AppLogic for RayApp {
             label: Some("Compositor Pipeline"),
             layout: Some(&compositor::create_pipeline_layout(&state.device)),
             module: &compositor::create_shader_module(&state.device),
-            // entry_point: Some(compositor::ENTRY_MAIN_PASS2),
-            entry_point: Some(compositor::ENTRY_MAIN_DENOISE),
+            entry_point: Some(compositor::ENTRY_MAIN_PASS2),
+            // entry_point: Some(compositor::ENTRY_MAIN_DENOISE),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });

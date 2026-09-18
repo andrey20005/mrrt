@@ -218,6 +218,7 @@ fn cast_ray(ro: vec3f, rd: vec3f) -> RayHit {
     return RayHit(hit_poly_idx, min_dist);
 }
 
+// Честное отражение с правильным распределением 
 struct RayReflection {
     color: vec3f,
     is_terminal: bool,
@@ -249,13 +250,13 @@ fn reflect_ray(ro: vec3f, rd: vec3f, rayHit: RayHit) -> RayReflection {
             hit_color = poly.color;
             terminal = true;
         }
-        else if (t == 0.0) {
+        else if (t == 0.0 || (-0.001 < t && t < 0.05)) {
             // Режим 0: Идеальное зеркало
             hit_color = poly.color;
             newRd = reflect(rd, normal);
             terminal = false;
         }
-        else if (t == 1.0) {
+        else if (t == 1.0  || (9.95 < t && t < 1.001)) {
             // Режим 1: Идеально матовая поверхность
             hit_color = poly.color;
             newRd = rand3d_cosine_hemisphere(normal);
@@ -278,6 +279,38 @@ fn reflect_ray(ro: vec3f, rd: vec3f, rayHit: RayHit) -> RayReflection {
     return RayReflection(hit_color, terminal, newRo, newRd);
 }
 
+// Умное отражение для матовых поверхностей
+// ТОЛЬНО для первого матовой поверхности на пути луча
+// НЕ должен гарантировать равномерность распределения, его мы достигаем с помощью денойзера
+fn smart_reflect_ray(ro: vec3f, rd: vec3f, rayHit: RayHit) -> RayReflection {
+    if (rayHit.hit_poly_idx > -1) {
+        let poly = polygons[rayHit.hit_poly_idx];
+        var t = poly.t;
+        if (t < 0.) { // если t отрицательное то полигон виден только с одной стороны
+            t = -t;
+        }
+        if (0.01 < t && t <= 1.001) {
+            var newRd = rd;
+            var normal = poly.normal;
+            if (dot(rd, poly.normal) > 0.0) { normal = -poly.normal; }
+            let newRo = ro + rd * rayHit.dist + normal * 0.0001;
+            if (t == 1.0  || (9.95 < t && t < 1.001)) {
+                // Режим 1: Идеально матовая поверхность
+
+                // нужно придумать более интерестный способ генерировать направление
+                // напимер можно силой направлять луч к испочнику света
+                newRd = rand3d_cosine_hemisphere(normal);
+            } else {
+                let diffuse = rand3d_cosine_hemisphere(normal);
+                let specular = reflect(rd, normal);
+                newRd = normalize(mix(specular, diffuse, poly.t)); // и тут что-то придумать
+            }
+            return RayReflection(poly.color, false, newRo, newRd);
+        }
+    }
+    return reflect_ray(ro, rd, rayHit);
+}
+
 struct TraceData {
     color: vec3f,
     has_noisy: f32,
@@ -288,7 +321,7 @@ struct TraceData {
     path_length: f32,
 }
 
-// --- НОВАЯ ФУНКЦИЯ ТРАССИРОВКИ С РАЗДЕЛЕНИЕМ ПУТИ ---
+// Трассировка с разделением пути
 fn trace_ray_split(ro_in: vec3f, rd_in: vec3f) -> TraceData {
     var data: TraceData;
     data.color = vec3f(0.0);
@@ -307,10 +340,11 @@ fn trace_ray_split(ro_in: vec3f, rd_in: vec3f) -> TraceData {
 
     for (var i = uf.bounces; i > 0; i--) {
         let hit = cast_ray(ro, rd);
-        data.path_length += hit.dist;
-        let refl = reflect_ray(ro, rd, hit);
 
         if (!found_noisy) {
+            // let refl = reflect_ray(ro, rd, hit);
+            data.path_length += hit.dist;
+
             let hit_poly_idx = hit.hit_poly_idx;
             var is_noisy = false;
             
@@ -324,6 +358,8 @@ fn trace_ray_split(ro_in: vec3f, rd_in: vec3f) -> TraceData {
 
             if (is_noisy) {
                 // Встретили первую шумящую поверхность
+                let refl = smart_reflect_ray(ro, rd, hit);
+
                 found_noisy = true;
                 data.has_noisy = 1.0;
                 data.color = throughput * refl.color;
@@ -343,6 +379,8 @@ fn trace_ray_split(ro_in: vec3f, rd_in: vec3f) -> TraceData {
                 rd = refl.newRd;
             } else {
                 // Не шумящая поверхность (зеркало, свет или фон)
+                let refl = reflect_ray(ro, rd, hit);
+                
                 throughput *= refl.color;
                 if (refl.is_terminal) {
                     data.color = throughput;
@@ -355,6 +393,7 @@ fn trace_ray_split(ro_in: vec3f, rd_in: vec3f) -> TraceData {
                 rd = refl.newRd;
             }
         } else {
+            let refl = reflect_ray(ro, rd, hit);
             // Уже нашли шумящую, копим остаток пути
             remaining_throughput *= refl.color;
             if (refl.is_terminal) {
@@ -378,8 +417,7 @@ fn main_pass1(@builtin(global_invocation_id) global_id: vec3<u32>) {
     if (global_id.x >= dimensions.x || global_id.y >= dimensions.y) { return; }
     
     let uv = (vec2<f32>(global_id.xy) / vec2<f32>(dimensions) - 0.5) * uf.aspect;
-    // rng_state = new_seed_f32(vec4f(uf.time * 0.9, global_id.x % 2, uv.y % 1, 0));
-    rng_state = new_seed(vec4u(u32(uf.time * 0), global_id.x, global_id.y, 0));
+    rng_state = new_seed(vec4u(bitcast<u32>(uf.time), global_id.x, global_id.y, 0));
 
     let ro = uf.camera_pos;
     let rd = normalize(uf.camera_mat * vec3f(uv + uf.pixel_size * vec2f(random_f32(), random_f32()), uf.camera_zoom));
